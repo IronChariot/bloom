@@ -8,6 +8,10 @@
   "preview_urls": false,
   "assets": { "directory": "../public", "binding": "ASSETS", "run_worker_first": true },
   "d1_databases": [{ "binding": "DB", "database_name": "bloom", "database_id": "8f8c4b7f-dbbd-4825-a0cf-c542aeab5ca4", "migrations_dir": "../drizzle" }],
-  "vars": { "MCP_ORIGIN": "https://bloom-mcp.theothersam.workers.dev" },
+  "vars": {
+    "MCP_ORIGIN": "https://bloom-mcp.theothersam.workers.dev",
+    "ACCESS_ISSUER": "https://theothersam.cloudflareaccess.com",
+    "ACCESS_AUD": "cfcc244e173d96c2edba844e68bcd515b7e31ab87b23238349a7cdc13d9e2954"
+  },
   "observability": { "enabled": true, "head_sampling_rate": 0.1 }
 }

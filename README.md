@@ -1,6 +1,6 @@
 # Bloom
 
-Bloom's multi-user web app lives in [web](web/README.md). It includes motion-driven drag deformation, generation-based bubble sizing, centred auto-height text editing, and links that preserve colours. Its Cloudflare Workers and D1 database are deployed; human sign-in awaits Cloudflare Access configuration. See the [deployment and handoff guide](web/CLOUDFLARE.md).
+Bloom's multi-user web app lives in [web](web/README.md). It includes motion-driven drag deformation, generation-based bubble sizing, centred auto-height text editing, and links that preserve colours. Its Cloudflare Workers and D1 database are deployed, with verified human sign-in and remote MCP collaboration. Open [Bloom](https://bloom.theothersam.workers.dev) or see the [deployment and handoff guide](web/CLOUDFLARE.md).
 
 The original Windows prototype remains in `release/Bloom-win32-x64`. Its executable has not been rebuilt for the web pivot. Your 15-node desktop board was backed up to `artifacts/desktop-board-backup.bloom`; import that file from Bloom's menu to carry it into a hosted board. The backup is excluded from the hosted source repository.
 

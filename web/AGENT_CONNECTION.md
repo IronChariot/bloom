@@ -29,7 +29,7 @@ Put `BLOOM_TOKEN=YOUR_BOARD_TOKEN` in that profile's `~/.hermes/.env`, then rest
 
 Then ask Hermes in Discord: "Read my Bloom board and summarize it before making any changes." No Discord message needs to contain the secret token. Later, an authorized edit should appear in the human canvas at its next sync. The migration prepared board-specific YAML and a token in ignored local `artifacts/hermes/` files; these have not been installed on the other machine.
 
-The dedicated Cloudflare endpoint passed live MCP SDK discovery, read/write, conflict and token lifecycle tests. Human Cloudflare sign-in remains blocked on Access account setup. The old private Site and Cloudflare use separate databases: changes in one do not appear in the other.
+The dedicated Cloudflare endpoint passed live MCP SDK discovery, read/write, conflict and token lifecycle tests. Human email sign-in, human edits read through MCP, agent edits appearing in the browser and fresh PNG snapshots were verified on 2026-09-12. The old private Site and Cloudflare use separate databases: changes in one do not appear in the other.
 
 ## Collaboration sequence
 

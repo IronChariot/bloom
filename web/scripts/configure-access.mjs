@@ -12,7 +12,7 @@ const providers = await cfApi(`${prefix}/identity_providers`);
 let provider = providers.find(p => p.type === 'onetimepin');
 if (!provider) provider = await cfApi(`${prefix}/identity_providers`, 'POST', { name: 'Email login code', type: 'onetimepin', config: {} });
 const apps = await cfApi(`${prefix}/apps`);
-const existing = apps.find(app => app.domain === 'bloom.theothersam.workers.dev');
+const existing = apps.find(app => app.id === '8a667c42-3c82-45ec-af6c-382f7561bb2a' || app.domain === 'bloom.theothersam.workers.dev');
 const app = existing || await cfApi(`${prefix}/apps`, 'POST', {
   type: 'self_hosted', name: 'Bloom', domain: 'bloom.theothersam.workers.dev', session_duration: '24h',
   allowed_idps: [provider.id], auto_redirect_to_identity: true,
