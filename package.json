@@ -1,0 +1,23 @@
+{
+  "name": "bloom-brainstorm",
+  "version": "0.1.0",
+  "description": "An elastic brainstorm canvas for humans and agents",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.js",
+    "test:ui": "node tests/ui.mjs",
+    "package": "electron-packager . Bloom --platform=win32 --arch=x64 --out=release --overwrite --ignore=\"^/(release|tests|artifacts|\\.git)\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.2.0",
+    "playwright": "1.58.2"
+  }
+}
