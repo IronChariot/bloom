@@ -1,0 +1,6 @@
+import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
+export const boards = sqliteTable('boards', {
+  id: text('id').primaryKey(), owner: text('owner').notNull(), graph: text('graph').notNull(), revision: integer('revision').notNull().default(0), updated: integer('updated').notNull(), inviteHash: text('invite_hash'), agentHash: text('agent_hash'), agentEnabled: integer('agent_enabled').notNull().default(1), image: text('image'), imageAt: integer('image_at'), imageRequested: integer('image_requested'), imageRevision: integer('image_revision'), past: text('past').notNull().default('[]'), future: text('future').notNull().default('[]')
+});
+export const members = sqliteTable('members', { boardId: text('board_id').notNull().references(() => boards.id), userId: text('user_id').notNull(), name: text('name').notNull(), role: text('role').notNull(), seen: integer('seen').notNull() }, t => [primaryKey({ columns: [t.boardId, t.userId] }), index('members_user').on(t.userId)]);
+export const changes = sqliteTable('changes', { boardId: text('board_id').notNull().references(() => boards.id), revision: integer('revision').notNull(), graph: text('graph').notNull(), actor: text('actor').notNull(), at: integer('at').notNull(), kind: text('kind').notNull() }, t => [primaryKey({ columns: [t.boardId, t.revision] })]);

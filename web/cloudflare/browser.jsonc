@@ -1,0 +1,13 @@
+{
+  "name": "bloom",
+  "main": "browser.js",
+  "account_id": "176f6319b68a88de047649d365cd1a61",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": { "directory": "../public", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [{ "binding": "DB", "database_name": "bloom", "database_id": "8f8c4b7f-dbbd-4825-a0cf-c542aeab5ca4", "migrations_dir": "../drizzle" }],
+  "vars": { "MCP_ORIGIN": "https://bloom-mcp.theothersam.workers.dev" },
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+}
