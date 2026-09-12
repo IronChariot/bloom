@@ -151,7 +151,26 @@ try {
   assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: secondId, sinceRevision: 0, nodeIds: ['branch'] } })).isError, true);
   await query('DELETE FROM changes WHERE board_id = ? AND revision = 0', [secondId]);
   assert.equal((await call('get_board', { sinceRevision: 0 })).resyncRequired, true);
-  const finalRevision = removed.revision;
+  let finalRevision = removed.revision;
+  const petals = await call('edit_board', { expectedContentRevision: removed.contentRevision, operations: [
+    { type: 'addPetal', nodeId: rootId, id: 'note', kind: 'comment', comment: 'A live comment\nwith a second line', author: 'forged@example.com', createdAt: 1 },
+    { type: 'addPetal', nodeId: rootId, id: 'emoji', kind: 'emoji', emoji: '😀' },
+    { type: 'addPetal', nodeId: rootId, id: 'color', kind: 'color', color: '#8675ef' },
+    { type: 'styleEdges', ids: branch.added.edges.filter(e=>e.target==='branch').map(e=>e.id), pattern: 'dotted', arrows: 'both' },
+  ] });
+  const note = petals.updated.nodes.find(n=>n.id===rootId).petals.find(p=>p.id==='note');
+  assert.equal(note.author, 'AI collaborator'); assert.notEqual(note.createdAt, 1);
+  assert.equal(petals.updated.edges[0].pattern, 'dotted'); assert.equal(petals.updated.edges[0].type, 'both');
+  const petalRead = await call('get_board', { nodeIds: [rootId] }); assert.equal(petalRead.graph.nodes[0].petals.length, 3);
+  const fullPetals = await call('edit_board', { expectedContentRevision: petals.contentRevision, operations: Array.from({length:5},(_,i)=>({ type:'addPetal',nodeId:rootId,id:'extra-'+i,kind:'color' })) });
+  assert.equal((await resumed.callTool({name:'edit_board',arguments:{boardId:secondId,expectedContentRevision:fullPetals.contentRevision,operations:[{type:'addPetal',nodeId:rootId,kind:'color'}]}})).isError,true);
+  const rearranged = await call('edit_board',{expectedContentRevision:fullPetals.contentRevision,operations:[{type:'movePetal',nodeId:rootId,id:'note',slot:2},{type:'updatePetal',nodeId:rootId,id:'note',comment:'Edited live comment'}]});
+  const resultPetals = rearranged.updated.nodes[0].petals;
+  assert.equal(new Set(resultPetals.map(p=>p.slot)).size,8); assert.equal(resultPetals.find(p=>p.id==='note').slot,2); assert.equal(resultPetals.find(p=>p.id==='note').updatedBy,'AI collaborator');
+  const removedPetal = await call('edit_board',{expectedContentRevision:rearranged.contentRevision,operations:[{type:'deletePetal',nodeId:rootId,id:'emoji'}]});
+  const petalChanges = await call('get_board',{sinceRevision:petals.revision}); assert.equal(petalChanges.updated.nodes[0].petals.length,7);
+  finalRevision = removedPetal.revision;
+  console.log('PASS: composed dotted arrows, petal batches/reads/deltas, authenticated authorship, capacity enforcement, occupied-slot movement, comment editing and deletion.');
   console.log('PASS: independent content/layout preconditions, concurrent merge, stale/unsafe edits rejected, since-revision deltas, deletion cascades, empty/future/expired cursors and reverse arrows.');
 
   await query('UPDATE boards SET agent_hash = NULL, agent_enabled = 0 WHERE id = ?', [id]);

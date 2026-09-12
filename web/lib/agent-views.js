@@ -10,7 +10,7 @@ export function readView(board, { view = 'compact', nodeIds, includeLayout = fal
     graph: {
       ...(view === 'full' ? { format: graph.format, version: graph.version } : {}),
       title: graph.title,
-      nodes: nodes.map(n => view === 'full' || includeLayout ? { ...n } : { id: n.id, text: n.text }),
+      nodes: nodes.map(n => view === 'full' || includeLayout ? { ...n } : { id: n.id, text: n.text, ...(n.petals?.length ? { petals: n.petals } : {}) }),
       edges,
     },
   };

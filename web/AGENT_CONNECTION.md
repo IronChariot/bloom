@@ -100,3 +100,18 @@ Retained history is bounded (up to 50 snapshots and 8 MiB, shared with undo/redo
 An edit receipt describes only its own committed batch. If its `previousRevision` differs from your cached revision, other changes occurred before the commit: request changes since your **cached** revision to catch them before advancing a full-board cache. Calling with the receipt's `revision` asks only about changes after that edit. Full snapshots and since-revision results each identify the consistent graph revision they represent; subsequent collaborators can still advance the board.
 
 Screenshots remain optional with the existing freshness/retry guidance. A bounded wait inside `get_board_image` is not implemented: currently a missing/stale image requests a browser capture and tells the agent to retry after 15 seconds.
+
+## Connection styles and petals (MCP 0.7)
+
+New parent/child connections default to a solid arrow toward the child. Existing connections keep their appearance. Line pattern and arrowheads are independent: an edge's `pattern` is `solid` or `dotted`, while `type` is `line` (no arrow), `arrow`, `reverse`, or `both`. Legacy `type: "dotted"` means a dotted line with no arrow when `pattern` is absent.
+
+Use `styleEdges` with an `ids` array and `pattern` and/or `arrows` (`none`, `arrow`, `reverse`, `both`). Omitted aspects remain unchanged. `updateEdge` does the same for a single `id`. `connect` also accepts an optional independent `pattern`. `colorNodes` recolours an `ids` array, and `deleteEdges` deletes an edge `ids` array. Each batch is one undoable change, including bulk styles.
+
+Nodes can have up to eight `petals`, included in compact, targeted, full and changes-since reads. Petals have a stable `id`, `slot` (0–7 clockwise from the upper-right position), `kind` (`color`, `emoji`, `comment`) and `color`. Emoji petals carry `emoji`; comment petals carry `comment`, `author`, `createdAt`, and optional `updatedBy`/`updatedAt` (Unix milliseconds).
+
+- `addPetal`: `nodeId`, optional short `id`, `kind`, optional `color`, plus `emoji` or nonblank `comment` as applicable. Uses the first empty slot; rejects a ninth petal.
+- `updatePetal`: `nodeId`, petal `id`, optional `color`, `kind`, `emoji`, `comment`. Pass `beforeComment` when editing an existing comment to reject a stale draft. Blank colour petals may become an emoji or comment. Emoji/comment petals cannot convert into each other or silently discard their contents. Any kind may be recoloured.
+- `movePetal`: `nodeId`, petal `id`, `slot`. Occupied neighbours shift clockwise into the next free position.
+- `deletePetal`: `nodeId`, petal `id`.
+
+These are content edits and use `expectedContentRevision`. Comment authors and dates are assigned by the server, not supplied by clients: human comments use their authenticated email, agent comments identify the AI collaborator. Editing preserves the original author/date and records the editor/date. Importing files preserves their historical metadata as file content; copied/pasted comment petals are new comments attributed to the person pasting. Bloom and JSON Canvas exports preserve petals and combined connection styles in their Bloom metadata.

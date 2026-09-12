@@ -175,6 +175,7 @@ try {
   await frame.getByRole('button', { name: 'Set colour #f3af47', exact: true }).click();
   await waitFor(() => edits.length === 7); edits[6].commit();
   await waitFor(async () => await leaf.locator('.bubble-shape').getAttribute('fill') === '#f3af47');
+  await waitFor(async () => await frame.locator('#save-status').innerText() === 'All changes saved');
   const base = frame.getByRole('button', { name: 'Set colour #8675ef', exact: true });
   const colorBox = await base.boundingBox();
   await page.mouse.move(colorBox.x + colorBox.width / 2, colorBox.y + colorBox.height / 2); await page.mouse.down();

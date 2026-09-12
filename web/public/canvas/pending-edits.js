@@ -7,6 +7,7 @@ export function withPendingEdits(confirmed, edits) {
   if (!confirmed?.graph || !local.length) return confirmed;
   const patches = new Map();
   for (const edit of local) for (const op of edit.operations) {
+    if (op.type === 'colorNodes') { for (const id of op.ids) patches.set(id, { ...patches.get(id), color: op.color }); continue; }
     if (op.type !== 'updateNode') continue;
     const patch = patches.get(op.id) || {};
     for (const key of ['x', 'y', 'text', 'color']) if (op[key] !== undefined) patch[key] = op[key];

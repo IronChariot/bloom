@@ -1,3 +1,4 @@
+import { createPetals } from './petals.js';
 import { colorShades } from './color-shades.js';
 import { labelLayout } from './label-layout.js';
 import { createDeformation, stepDeformation, deformPoint } from './deformation.js';
@@ -18,9 +19,10 @@ document.querySelector('#app').innerHTML = `
  <div class="selection-actions hidden" id="selection-actions"></div><div id="panels"></div><div id="toast" class="toast hidden" role="status"></div><div id="connector-picker" class="connector-picker hidden"></div><div id="empty" class="empty hidden"></div>`;
 
 const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), edgesLayer = document.querySelector('#edges'), panels = document.querySelector('#panels');
-let state, selected = new Set(), selectedEdge = null, tool = 'select', view = { x: innerWidth / 2, y: (innerHeight - 76) / 2 - 25, zoom: 1 }, physical = new Map(), drag = null, pan = null, space = false, editor = null, editTimer, toastTimer, openPanel = null, busy = Promise.resolve(), clipboardCache = null, activeTarget = null, chosenStyle = null, sessionInfo = null, first = true, lastNodeClick = null, consumedDoubleClick = 0;
+let state, selected = new Set(), selectedEdges = new Set(), tool = 'select', view = { x: innerWidth / 2, y: (innerHeight - 76) / 2 - 25, zoom: 1 }, physical = new Map(), drag = null, pan = null, space = false, editor = null, editTimer, toastTimer, openPanel = null, busy = Promise.resolve(), clipboardCache = null, activeTarget = null, chosenStyle = null, sessionInfo = null, first = true, lastNodeClick = null, consumedDoubleClick = 0;
 let shadeHold = null, shadeMenu = null, suppressedColor = null, suppressedUntil = 0;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const petalUI = createPetals({ board, getState: () => state, nodeById: id => nodeById(id), getPhysical: () => physical, radius: n => radius(n), clientToWorld: (x,y) => clientToWorld(x,y), apply: ops => apply(ops), esc, colors, toast, prepare: id => { clearTimeout(editTimer); finishEdit(); closePanel(); select(id); } });
 let confirmedState;
 const pendingEdits = [];
 const uid = () => crypto.randomUUID();
@@ -70,7 +72,7 @@ function update(next) {
   state = withPendingEdits(next, pendingEdits);
   const heading = document.querySelector('#board-title');
   heading.textContent = state.graph?.title || 'No board open'; heading.title = heading.textContent;
-  selected = new Set([...selected].filter(id => nodeById(id))); if (selectedEdge && !state.graph?.edges.some(e => e.id === selectedEdge)) selectedEdge = null;
+  selected = new Set([...selected].filter(id => nodeById(id))); selectedEdges = new Set([...selectedEdges].filter(id => state.graph?.edges.some(e => e.id === id)));
   if (editor && !nodeById(editor.id)) { editor.el.remove(); editor = null; }
   document.querySelector('#save-status').textContent = state.graph ? state.dirty ? 'Saving changes…' : 'All changes saved' : 'Open a board to begin';
   document.querySelector('[data-command="undo"]').disabled = !state.canUndo; document.querySelector('[data-command="redo"]').disabled = !state.canRedo;
@@ -80,7 +82,7 @@ function update(next) {
     if (!physical.has(n.id)) { const edge = state.graph.edges.find(e => e.target === n.id); const parent = edge && physical.get(edge.source); physical.set(n.id, { x: parent && !first ? parent.x : n.x, y: parent && !first ? parent.y : n.y, vx: 0, vy: 0, wobble: oldIds.has(n.id) ? 0 : 1, seed: n.id.charCodeAt(0), born: first ? 0 : performance.now() }); }
   }
   for (const id of physical.keys()) if (!nodeById(id)) physical.delete(id);
-  renderGraph(); renderSelection();
+  petalUI.reconcile(); renderGraph(); renderSelection();
   if (changedBoard || first) { selected.clear(); fit(); first = false; }
   if (openPanel === 'session') renderSession();
 }
@@ -88,9 +90,9 @@ function renderGraph() {
   if (!state.graph) { nodesLayer.innerHTML = ''; edgesLayer.innerHTML = ''; return; }
   nodesLayer.innerHTML = state.graph.nodes.map(n => {
     const r = radius(n), { font, lines } = label(n), p = physical.get(n.id);
-    return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
+    return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text>${petalUI.render(n)}</g>`;
   }).join('');
-  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdge === e.id ? ' selected' : ''}" ${e.type === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
+  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
 }
 function blob(rx, ry, t, wobble, seed, extra = 0, shape = null, grab = null) {
   const points = Array.from({ length: 24 }, (_, i) => { const a = i / 24 * Math.PI * 2; const wave = 1 + Math.sin(a * 3 + seed) * .014 + Math.sin(a * 4 + t * 13) * wobble * .035; const x = Math.cos(a) * (rx + extra) * wave, y = Math.sin(a) * (ry + extra) * wave; return shape ? deformPoint(x, y, rx + extra, ry + extra, shape, grab) : { x, y }; });
@@ -119,6 +121,7 @@ function frame(now) {
       if (reduced) p.shape = createDeformation(p.x, p.y); else stepDeformation(p.shape, p.x, p.y, dt / 60, contact);
       const grab = drag?.id === n.id ? drag.grab : null;
       el.setAttribute('transform', `translate(${p.x},${p.y})`); el.querySelector('.bubble-shape').setAttribute('d', blob(r.rx, r.ry, now / 1000, reduced ? 0 : p.wobble, p.seed, 0, p.shape, grab)); el.querySelector('.selection-ring').setAttribute('d', blob(r.rx, r.ry, now / 1000, reduced ? 0 : p.wobble, p.seed, 7, p.shape, grab));
+      petalUI.frame(n, el, dt);
     }
     for (const e of state.graph.edges) {
       const a = physical.get(e.source), b = physical.get(e.target); if (!a || !b) continue;
@@ -137,15 +140,19 @@ function setView() { world.setAttribute('transform', `translate(${view.x},${view
 function zoom(factor, x = innerWidth / 2, y = (innerHeight + 76) / 2) { const p = clientToWorld(x, y); view.zoom = Math.max(.18, Math.min(2.5, view.zoom * factor)); view.x = x - p.x * view.zoom; view.y = y - 76 - p.y * view.zoom; setView(); }
 function fit() {
   const ns = state?.graph?.nodes; if (!ns?.length) { view = { x: innerWidth / 2, y: (innerHeight - 76) / 2, zoom: 1 }; setView(); return; }
-  const minX = Math.min(...ns.map(n => n.x - radius(n).rx)), maxX = Math.max(...ns.map(n => n.x + radius(n).rx)), minY = Math.min(...ns.map(n => n.y - radius(n).ry)), maxY = Math.max(...ns.map(n => n.y + radius(n).ry));
+  const minX = Math.min(...ns.map(n => n.x - radius(n).rx - (n.petals?.length ? 40 : 0))), maxX = Math.max(...ns.map(n => n.x + radius(n).rx + (n.petals?.length ? 40 : 0))), minY = Math.min(...ns.map(n => n.y - radius(n).ry - (n.petals?.length ? 40 : 0))), maxY = Math.max(...ns.map(n => n.y + radius(n).ry + (n.petals?.length ? 40 : 0)));
   view.zoom = Math.min(1.05, (innerWidth - 260) / Math.max(1, maxX - minX), (innerHeight - 300) / Math.max(1, maxY - minY)); view.x = innerWidth / 2 - (minX + maxX) / 2 * view.zoom + 10; view.y = (innerHeight - 76) / 2 - (minY + maxY) / 2 * view.zoom - 10; setView();
 }
 function setTool(value) { tool = value; document.querySelectorAll('[data-tool]').forEach(el => el.classList.toggle('active', el.dataset.tool === tool)); board.classList.toggle('creating', tool === 'add'); }
-function select(id, additive = false) { if (!additive) selected.clear(); if (id) { if (additive && selected.has(id)) selected.delete(id); else selected.add(id); } selectedEdge = null; renderGraph(); renderSelection(); }
+function select(id, additive = false) { if (!additive) selected.clear(); if (id) { if (additive && selected.has(id)) selected.delete(id); else selected.add(id); } selectedEdges.clear(); renderGraph(); renderSelection(); }
 function renderSelection() {
   closeShades();
-  const el = document.querySelector('#selection-actions'); el.classList.toggle('hidden', !selected.size && !selectedEdge);
-  if (selectedEdge) { el.innerHTML = `<span class="label">Connection</span>${['line', 'arrow', 'reverse', 'both', 'dotted'].map(t => `<button data-edge-style="${t}" title="${({line:'Line',arrow:'Forward arrow',reverse:'Reverse arrow',both:'Two-way arrow',dotted:'Dotted line'})[t]}" aria-label="${({line:'Line',arrow:'Forward arrow',reverse:'Reverse arrow',both:'Two-way arrow',dotted:'Dotted line'})[t]}" aria-pressed="${state.graph.edges.find(e => e.id === selectedEdge)?.type === t}">${icon(t)}</button>`).join('')}<button class="delete" data-delete aria-label="Delete connection">${icon('trash')}</button>`; return; }
+  const el = document.querySelector('#selection-actions'); el.classList.toggle('hidden', !selected.size && !selectedEdges.size);
+  if (selectedEdges.size) {
+    const edges = state.graph.edges.filter(e => selectedEdges.has(e.id));
+    const button = (group, value, label, glyph) => `<button data-edge-${group}="${value}" title="${label}" aria-label="${label}" aria-pressed="${edges.every(e => (group === 'pattern' ? (e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) : (['line', 'dotted'].includes(e.type) ? 'none' : e.type)) === value)}">${icon(glyph)}</button>`;
+    el.innerHTML = `<span class="label">${edges.length === 1 ? 'Connection' : `${edges.length} connections`}</span>${button('pattern','solid','Solid line','line')}${button('pattern','dotted','Dotted line','dotted')}<div class="zoom-sep" style="align-self:center"></div>${button('arrows','none','No arrow','line')}${button('arrows','arrow','Forward arrow','arrow')}${button('arrows','reverse','Reverse arrow','reverse')}${button('arrows','both','Two-way arrow','both')}<button class="delete" data-delete aria-label="Delete connection">${icon('trash')}</button>`; return;
+  }
   el.innerHTML = `<span class="label">${selected.size === 1 ? 'Idea' : `${selected.size} ideas`}</span>${colors.map(c => `<button data-color="${c}" aria-haspopup="true" title="Set colour ${c} · Hold for shades" aria-label="Set colour ${c}"><span class="swatch" style="background:${c}"></span></button>`).join('')}<div class="zoom-sep" style="align-self:center"></div><button data-copy title="Copy selected ideas" aria-label="Copy selected ideas">${icon('copy')}</button><button class="delete" data-delete title="Delete selected ideas" aria-label="Delete selected ideas">${icon('trash')}</button>`;
 }
 function closeShades() {
@@ -172,7 +179,7 @@ function openShades(button, keyboard = false) {
 }
 function applyShade(color) {
   const ids = [...selected]; closeShades();
-  if (ids.length) apply(ids.map(id => ({ type: 'updateNode', id, color })));
+  if (ids.length) apply([{ type: 'colorNodes', ids, color }]);
 }
 document.addEventListener('pointerdown', e => {
   const button = e.target.closest('[data-color]');
@@ -247,9 +254,10 @@ board.addEventListener('pointerdown', e => {
   if (![0, 1].includes(e.button) || !state?.graph) return; clearTimeout(editTimer); closePanel(); const id = e.target.closest('[data-node]')?.dataset.node, edge = e.target.closest('[data-edge]')?.dataset.edge;
   if (e.button === 1 || space || tool === 'hand' || (!id && !edge && tool !== 'add')) { finishEdit(); pan = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; board.setPointerCapture(e.pointerId); board.classList.add('panning'); e.preventDefault(); return; }
   if (tool === 'add') { const p = clientToWorld(e.clientX, e.clientY); addNode(p.x, p.y, id); e.preventDefault(); return; }
-  if (edge) { selected.clear(); selectedEdge = edge; renderGraph(); renderSelection(); return; }
+  if (edge) { finishEdit(); selected.clear(); if (!(e.ctrlKey || e.metaKey || e.shiftKey)) selectedEdges.clear(); if ((e.ctrlKey || e.metaKey || e.shiftKey) && selectedEdges.has(edge)) selectedEdges.delete(edge); else selectedEdges.add(edge); renderGraph(); renderSelection(); return; }
   if (id) {
-    finishEdit(); const n = nodeById(id), p = physical.get(id); const wasSelected = selected.has(id); if (!wasSelected || e.shiftKey) select(id, e.shiftKey); else { selectedEdge = null; renderSelection(); }
+    finishEdit(); const n = nodeById(id), p = physical.get(id); const wasSelected = selected.has(id); if (!wasSelected || e.shiftKey || e.ctrlKey || e.metaKey) select(id, e.shiftKey || e.ctrlKey || e.metaKey); else { selectedEdges.clear(); renderSelection(); }
+    if (!selected.has(id)) { e.preventDefault(); return; }
     const hit = clientToWorld(e.clientX, e.clientY), r = radius(n);
     p.wobble = 0;
     for (const id of selected) { const held = physical.get(id); if (held) { held.vx = 0; held.vy = 0; } }
@@ -282,7 +290,7 @@ function pointerUp(e) {
     if (d.moved && nodeById(d.id)) {
       if (target && style && nodeById(target)) { apply([{ type: 'connect', source: d.id, target, style }]); }
       else if (!target) { const p = physical.get(d.id), dx = p.x - d.ox, dy = p.y - d.oy; apply(d.group.filter(n => nodeById(n.id)).map(n => ({ type: 'updateNode', id: n.id, x: Math.max(-99000, Math.min(99000, n.x + dx)), y: Math.max(-99000, Math.min(99000, n.y + dy)), before: { x: n.x, y: n.y } }))); }
-    } else if (!e.shiftKey) {
+    } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
       const now = performance.now();
       if (lastNodeClick?.id === d.id && now - lastNodeClick.at < 500 && Math.hypot(e.clientX - lastNodeClick.x, e.clientY - lastNodeClick.y) < 10) {
         clearTimeout(editTimer); consumedDoubleClick = now; lastNodeClick = null;
@@ -301,11 +309,13 @@ async function paste() {
   if (!state.graph) return;
   try { const raw = await api.command('pasteNodes'), data = JSON.parse(raw || clipboardCache || 'null'); if (data?.format !== 'bloom-clipboard' || !Array.isArray(data.nodes) || data.nodes.length > 100) { toast('Copy some ideas first.'); return; }
     const map = new Map(data.nodes.map(n => [n.id, uid()])); const ops = data.nodes.map(n => ({ type: 'addNode', id: map.get(n.id), text: n.text, x: n.x + 55, y: n.y + 55, color: n.color, depth: n.depth ?? 1 }));
-    for (const e of data.edges || []) if (map.has(e.source) && map.has(e.target)) ops.push({ type: 'connect', source: map.get(e.source), target: map.get(e.target), style: e.type });
+    for (const e of data.edges || []) if (map.has(e.source) && map.has(e.target)) ops.push({ type: 'connect', source: map.get(e.source), target: map.get(e.target), style: e.type, pattern: e.pattern });
+    for (const n of data.nodes) for (const p of n.petals || []) ops.push({ type: 'addPetal', nodeId: map.get(n.id), kind: p.kind, color: p.color, emoji: p.emoji, comment: p.comment });
+    if (ops.length > 200) { toast('Copy fewer ideas at once when they have many petals.'); return; }
     apply(ops, () => { selected = new Set(map.values()); renderGraph(); renderSelection(); });
   } catch { toast('The clipboard does not contain Bloom ideas.'); }
 }
-function removeSelection() { if (selectedEdge) apply([{ type: 'deleteEdge', id: selectedEdge }]); else if (selected.size) apply([{ type: 'deleteNodes', ids: [...selected] }]); }
+function removeSelection() { if (selectedEdges.size) apply([{ type: 'deleteEdges', ids: [...selectedEdges] }]); else if (selected.size) apply([{ type: 'deleteNodes', ids: [...selected] }]); }
 function tidy() {
   if (!state.graph || state.graph.nodes.length < 2) return; const layout = structuredClone(state.graph.nodes);
   for (let k = 0; k < 25; k++) for (let i = 0; i < layout.length; i++) for (let j = i + 1; j < layout.length; j++) { const a = layout[i], b = layout[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, needed = radius(a).rx + radius(b).rx + 30; if (d < needed) { const angle = dx || dy ? Math.atan2(dy, dx) : (i + j) * 2.39996, push = (needed - d) * .52; if (!a.root) { a.x -= Math.cos(angle) * push; a.y -= Math.sin(angle) * push; } if (!b.root) { b.x += Math.cos(angle) * push; b.y += Math.sin(angle) * push; } } }
@@ -329,18 +339,18 @@ document.addEventListener('click', async e => {
   if (button.dataset.command) { runCommand(button.dataset.command); closePanel(); }
   if (button.dataset.recent) { runCommand('recent', button.dataset.recent); closePanel(); }
   if (button.dataset.tool) setTool(button.dataset.tool);
-  if (button.dataset.color && selected.size) apply([...selected].map(id => ({ type: 'updateNode', id, color: button.dataset.color })));
+  if (button.dataset.color && selected.size) apply([{ type: 'colorNodes', ids: [...selected], color: button.dataset.color }]);
   if (button.hasAttribute('data-copy')) copy();
   if (button.hasAttribute('data-delete')) removeSelection();
   if (button.hasAttribute('data-close-panel')) closePanel();
-  if (button.dataset.edgeStyle && selectedEdge) { const edge = state.graph.edges.find(e => e.id === selectedEdge); apply([{ type: 'connect', source: edge.source, target: edge.target, style: button.dataset.edgeStyle }]); }
+  if ((button.dataset.edgePattern || button.dataset.edgeArrows) && selectedEdges.size) apply([{ type: 'styleEdges', ids: [...selectedEdges], ...(button.dataset.edgePattern ? { pattern: button.dataset.edgePattern } : { arrows: button.dataset.edgeArrows }) }]);
   const actions = { 'file-toggle': fileMenu, 'session-toggle': showSession, 'help-toggle': showHelp, 'zoom-in': () => zoom(1.15), 'zoom-out': () => zoom(1 / 1.15), 'zoom-value': () => zoom(1 / view.zoom), fit, tidy, 'copy-session': async () => { await act('copySession'); toast('MCP connection copied.'); }, 'copy-hermes': async () => { try { await api.command('copyHermes'); sessionInfo = await api.session(); renderSession(); toast('One-time Hermes setup copied. Keep its connection key private.'); } catch (e) { toast(e.message); } }, 'copy-board-code': async () => { try { await api.command('copyBoardCode'); sessionInfo = await api.session(); renderSession(); toast('Board code copied. Paste it privately to your agent.'); } catch (e) { toast(e.message); } }, 'replace-connection': async () => { try { await api.command('replaceConnection'); sessionInfo = await api.session(); renderSession(); toast('New setup copied. Update Hermes once; existing board grants are retained.'); } catch (e) { toast(e.message); } }, 'copy-agent-token': async () => { await act('copyAgentToken'); toast('Secret token copied. Keep it in Hermes environment settings.'); }, 'rotate-session': async () => { sessionInfo = await api.command('rotateSession'); renderSession(); toast('Old code and grants revoked. Copy the new board code for your agent.'); }, 'revoke-session': async () => { sessionInfo = await api.command('revokeSession'); renderSession(); toast('Board code and agent grants revoked.'); }, 'pause-session': async () => { sessionInfo = await api.command('sessionToggle', !sessionInfo.enabled); renderSession(); } };
   actions[button.id]?.();
 });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input,textarea,[contenteditable]')) return; const mod = e.ctrlKey || e.metaKey;
   if (e.key === 'Escape') { clearTimeout(editTimer); drag = null; pan = null; activeTarget = null; document.querySelector('#connector-picker').classList.add('hidden'); board.classList.remove('panning'); closePanel(); select(null); setTool('select'); return; }
-  if (mod && ['c', 'x', 'v', 'a', 'z', 'y'].includes(e.key.toLowerCase())) { e.preventDefault(); if (e.key.toLowerCase() === 'c') copy(); if (e.key.toLowerCase() === 'x') void copy().then(removeSelection); if (e.key.toLowerCase() === 'v') paste(); if (e.key.toLowerCase() === 'a' && state.graph) { selected = new Set(state.graph.nodes.map(n => n.id)); renderGraph(); renderSelection(); } if (e.key.toLowerCase() === 'z') act(e.shiftKey ? 'redo' : 'undo'); if (e.key.toLowerCase() === 'y') act('redo'); return; }
+  if (mod && ['c', 'x', 'v', 'a', 'z', 'y'].includes(e.key.toLowerCase())) { e.preventDefault(); if (e.key.toLowerCase() === 'c') copy(); if (e.key.toLowerCase() === 'x') void copy().then(removeSelection); if (e.key.toLowerCase() === 'v') paste(); if (e.key.toLowerCase() === 'a' && state.graph) { if (selectedEdges.size) selectedEdges = new Set(state.graph.edges.map(e => e.id)); else selected = new Set(state.graph.nodes.map(n => n.id)); renderGraph(); renderSelection(); } if (e.key.toLowerCase() === 'z') act(e.shiftKey ? 'redo' : 'undo'); if (e.key.toLowerCase() === 'y') act('redo'); return; }
   if (mod) return;
   if (e.key === ' ') { e.preventDefault(); space = true; }
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); removeSelection(); }

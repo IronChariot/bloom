@@ -96,7 +96,7 @@ export async function changeBoard(board, user, role, input, response = 'full', a
     const record = await db().prepare('SELECT graph FROM changes WHERE board_id = ? AND revision = ?').bind(board.id, revision).first();
     if (!record) fail('This history entry is unavailable.'); graph = validateGraph(JSON.parse(record.graph)); target.push(board.revision); kind = input.action === 'undo' ? 'Undid a shared change' : 'Redid a shared change';
   } else {
-    store.apply(input.operations, user.displayName, board.revision); graph = store.graph;
+    store.apply(input.operations, user.displayName, board.revision, user.email || (user.userId.startsWith('email:') ? user.userId.slice(6) : user.displayName)); graph = store.graph;
     past.push(board.revision); future.length = 0; kind = store.activity.at(-1).message;
   }
   const changed = revisionChanges(JSON.parse(board.graph), graph);
