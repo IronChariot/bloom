@@ -37,8 +37,9 @@ window.bloom = {
   async getState() { return started ? current : boot(); },
   async apply(operations, expectedRevision) {
     if (!boardId) throw new Error('Open a board first.'); lastInteraction = Date.now(); pending++; notify(current);
-    try { const next = await request(`boards/${boardId}/edit`, { operations, expectedRevision }); pending--; notify(next); return current; }
-    catch (error) { pending--; try { notify(await request(`boards/${boardId}`)); } catch {} throw error; }
+    const id = boardId;
+    try { const next = await request(`boards/${id}/edit`, { operations, expectedRevision }); pending--; if (id === boardId) notify(next); return current; }
+    catch (error) { pending--; try { const next = await request(`boards/${id}`); if (id === boardId) notify(next); } catch {} throw error; }
   },
   async command(name, value) {
     if (name === 'new' || name === 'saveAs') { const made = await request('boards', name === 'saveAs' ? { graph: current.graph } : {}); await refreshList(); await switchBoard(made.id); return; }

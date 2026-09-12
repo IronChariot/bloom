@@ -10,6 +10,8 @@ Changes are saved to D1. Active visible tabs check for edits every two seconds. 
 
 Retained undo/redo snapshots are capped at fifty entries and 8 MiB of graph data per board, whichever is reached first. Older snapshots are physically deleted in the same transaction as each edit; new edits also remove abandoned redo branches. The migration prunes existing history and filters its stacks consistently. Current board content is preserved. Activity is derived from this retained history rather than stored as an unlimited audit trail.
 
+Node moves, text and colour edits stay visible locally while saving. Queued edits keep their latest appearance when an earlier response arrives; confirmed server revisions and field preconditions still govern writes. Rejected edits reconcile with the server state and show a conflict message. `node tests/web-pending.mjs` from the repository root checks delayed and rejected saves using the real canvas and bridge in headless Chrome with an isolated local test server.
+
 The menu provides new boards, import, download, duplicate, recent boards, JSON Canvas export and close. A downloaded .bloom file is an offline copy; cloud persistence does not depend on downloading. Existing desktop .bloom files import through the menu. Save and export use browser downloads.
 
 ## Agent access

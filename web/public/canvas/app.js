@@ -1,4 +1,5 @@
 import { createDeformation, stepDeformation, deformPoint } from './deformation.js';
+import { boardKey, withPendingEdits } from './pending-edits.js';
 const api = window.bloom;
 const icons = {
  pointer: '<path d="m5 3 14 9-7 1-3 7z"/>', plus: '<path d="M12 5v14M5 12h14"/>', hand: '<path d="M8 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v7-4a2 2 0 0 1 4 0v9c0 5-4 7-7 7s-5-2-7-5l-3-4a2 2 0 0 1 3-2l2 2"/>', undo: '<path d="m8 5-5 5 5 5M3 10h11a6 6 0 0 1 0 12" transform="translate(0 -2)"/>', redo: '<path d="m16 5 5 5-5 5M21 10H10a6 6 0 0 0 0 12" transform="translate(0 -2)"/>', trash: '<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>', copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>', minus: '<path d="M5 12h14"/>', fit: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>', chevron: '<path d="m8 10 4 4 4-4"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', agent: '<rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M9 17h6M1 11v5M23 11v5"/>', arrow: '<path d="M3 12h17m-5-5 5 5-5 5"/>', both: '<path d="M3 12h18M8 7l-5 5 5 5m8-10 5 5-5 5"/>', line: '<path d="M3 12h18"/>', dotted: '<path d="M3 12h18" stroke-dasharray="2 4"/>', save: '<path d="M4 3h14l3 3v15H3V3h1M7 3v6h10V3M7 21v-8h10v8"/>', folder: '<path d="M3 20V5h7l2 3h9v12z"/>', spark: '<path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/>'
@@ -16,6 +17,8 @@ document.querySelector('#app').innerHTML = `
 const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), edgesLayer = document.querySelector('#edges'), panels = document.querySelector('#panels');
 let state, selected = new Set(), selectedEdge = null, tool = 'select', view = { x: innerWidth / 2, y: (innerHeight - 76) / 2 - 25, zoom: 1 }, physical = new Map(), drag = null, pan = null, space = false, editor = null, editTimer, toastTimer, openPanel = null, busy = Promise.resolve(), clipboardCache = null, activeTarget = null, chosenStyle = null, sessionInfo = null, first = true, lastNodeClick = null, consumedDoubleClick = 0;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let confirmedState;
+const pendingEdits = [];
 const uid = () => crypto.randomUUID();
 const nodeById = id => state?.graph?.nodes.find(n => n.id === id);
 const clientToWorld = (x, y) => ({ x: (x - view.x) / view.zoom, y: (y - 76 - view.y) / view.zoom });
@@ -24,7 +27,26 @@ function toast(message) { const el = document.querySelector('#toast'); el.textCo
 function act(name, value) { return api.command(name, value).catch(e => toast(e.message.replace(/^Error invoking remote method '[^']+': Error: /, ''))); }
 async function runCommand(name, value) { finishEdit(); await busy; if (!editor) return act(name, value); }
 function apply(ops, after, onError) {
-  busy = busy.then(async () => { try { update(await api.apply(ops, state.revision)); after?.(); } catch (e) { toast(e.message.replace(/^Error invoking remote method '[^']+': Error: /, '')); update(await api.getState()); onError?.(); } }); return busy;
+  const edit = { board: boardKey(state), operations: structuredClone(ops) };
+  pendingEdits.push(edit);
+  update(confirmedState);
+  busy = busy.then(async () => {
+    let next, error;
+    try {
+      if (boardKey(state) !== edit.board) return;
+      next = await api.apply(edit.operations, confirmedState.revision);
+    } catch (e) {
+      error = e;
+      try { next = await api.getState(); } catch { next = confirmedState; }
+    } finally {
+      pendingEdits.splice(pendingEdits.indexOf(edit), 1);
+      if (boardKey(state) === edit.board) update(next || confirmedState);
+    }
+    if (boardKey(state) !== edit.board) return;
+    if (error) { toast(error.message.replace(/^Error invoking remote method '[^']+': Error: /, '')); onError?.(); }
+    else after?.();
+  });
+  return busy;
 }
 const generation = n => n.root ? 0 : n.depth ?? 1;
 const fontSize = n => Math.max(12, 22 * .91 ** generation(n));
@@ -41,7 +63,8 @@ function wrap(text, width) {
 }
 function update(next) {
   const oldIds = new Set(state?.graph?.nodes.map(n => n.id) ?? []); const changedBoard = state && (state.graph?.nodes[0]?.id !== next.graph?.nodes[0]?.id);
-  state = next;
+  confirmedState = next;
+  state = withPendingEdits(next, pendingEdits);
   selected = new Set([...selected].filter(id => nodeById(id))); if (selectedEdge && !state.graph?.edges.some(e => e.id === selectedEdge)) selectedEdge = null;
   if (editor && !nodeById(editor.id)) { editor.el.remove(); editor = null; }
   document.querySelector('#save-status').textContent = state.graph ? state.dirty ? 'Saving changes…' : 'All changes saved' : 'Open a board to begin';
@@ -165,6 +188,7 @@ board.addEventListener('pointerdown', e => {
     finishEdit(); const n = nodeById(id), p = physical.get(id); const wasSelected = selected.has(id); if (!wasSelected || e.shiftKey) select(id, e.shiftKey); else { selectedEdge = null; renderSelection(); }
     const hit = clientToWorld(e.clientX, e.clientY), r = radius(n);
     p.wobble = 0;
+    for (const id of selected) { const held = physical.get(id); if (held) { held.vx = 0; held.vy = 0; } }
     drag = { id, grab: { x: (hit.x - p.x) / r.rx, y: (hit.y - p.y) / r.ry }, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, originalX: n.x, originalY: n.y, moved: false, text: !!e.target.closest('text'), pointerId: e.pointerId, group: [...selected].map(id => ({ id, x: nodeById(id).x, y: nodeById(id).y })) };
     board.setPointerCapture(e.pointerId); e.preventDefault();
   }

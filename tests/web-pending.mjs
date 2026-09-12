@@ -1,0 +1,94 @@
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { GraphStore, newGraph } from '../web/lib/graph.js';
+
+// Exercise the real renderer and bridge against deliberately delayed responses.
+const graph = newGraph(); graph.nodes[0].text = 'Drag check';
+const store = new GraphStore(graph), edits = [];
+const snapshot = () => ({ ...store.snapshot(), boardId: 'pending-test', dirty: false,
+  members: [], role: 'owner', user: { id: 'test', name: 'Test' }, agentEnabled: true, recent: [] });
+const server = http.createServer(async (req, res) => {
+  const send = (body, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname.startsWith('/api/')) {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
+    if (url.pathname === '/api/me') return send({ userId: 'test', displayName: 'Test' });
+    if (url.pathname === '/api/boards') return send({ boards: [{ id: 'pending-test', title: graph.title }] });
+    if (url.pathname === '/api/boards/pending-test') return send(snapshot());
+    if (url.pathname.endsWith('/sync')) return send({ revision: store.revision, members: [], agentEnabled: true,
+      ...(body.revision !== store.revision ? { state: snapshot() } : {}) });
+    if (url.pathname.endsWith('/edit')) {
+      edits.push({ body, commit() { store.apply(body.operations, 'Test', body.expectedRevision); send(snapshot()); },
+        reject() { send({ error: 'The board changed. Your edit was not applied; try again.' }, 409); } });
+      return;
+    }
+    return send({}, 404);
+  }
+  const file = path.resolve('web/public', url.pathname === '/' ? 'index.html' : '.' + url.pathname);
+  if (!file.startsWith(path.resolve('web/public') + path.sep)) return res.writeHead(404).end();
+  try {
+    const data = await fs.readFile(file);
+    res.writeHead(200, { 'Content-Type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' }); res.end(data);
+  } catch { res.writeHead(404).end(); }
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const browser = await chromium.launch({ headless: true, channel: process.env.BLOOM_TEST_BROWSER || 'chrome' });
+try {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/?board=pending-test`);
+  const frame = page.frameLocator('iframe'), node = frame.locator(`[data-node="${graph.nodes[0].id}"]`);
+  await node.waitFor();
+  const waitFor = async predicate => { for (let i = 0; i < 150; i++) { if (await predicate()) return; await new Promise(r => setTimeout(r, 20)); } throw Error('Timed out waiting for test state'); };
+  async function drop(dx, dy) {
+    const box = await node.boundingBox();
+    const start = { x: box.x + box.width / 2, y: box.y + 25 };
+    await page.mouse.move(start.x, start.y); await page.mouse.down();
+    await page.mouse.move(start.x + dx, start.y + dy, { steps: 12 }); await page.mouse.up();
+    return node.evaluate(e => { const m = e.transform.baseVal.getItem(0).matrix; return { x: m.e, y: m.f }; });
+  }
+  async function staysAt(target) {
+    const deviation = await node.evaluate(async (element, target) => {
+      const id = element.dataset.node; let max = 0;
+      for (let i = 0; i < 35; i++) {
+        await new Promise(requestAnimationFrame);
+        const m = document.querySelector(`[data-node="${id}"]`).transform.baseVal.getItem(0).matrix;
+        max = Math.max(max, Math.hypot(m.e - target.x, m.f - target.y));
+      }
+      return max;
+    }, target);
+    assert.ok(deviation < .1, `Dropped node drifted ${deviation.toFixed(2)} world units while saving`);
+  }
+  const first = await drop(160, 60); await waitFor(() => edits.length === 1); await staysAt(first);
+  const second = await drop(90, -35); await staysAt(second);
+  assert.equal(edits.length, 1, 'The second edit should wait for the first revision');
+  edits[0].commit(); await waitFor(() => edits.length === 2); await staysAt(second);
+  assert.equal(edits[1].body.expectedRevision, 1);
+  edits[1].commit(); await waitFor(async () => await frame.locator('#save-status').innerText() === 'All changes saved'); await staysAt(second);
+  assert.ok(Math.abs(store.graph.nodes[0].x - second.x) < .1);
+  console.log('PASS: dropped position stays fixed through latency, two queued drags and the older save response');
+
+  await node.focus(); await page.keyboard.press('Enter');
+  await frame.getByRole('textbox', { name: 'Edit idea' }).fill('Immediate label'); await page.keyboard.press('Enter');
+  await waitFor(() => edits.length === 3);
+  assert.equal(await node.getAttribute('aria-label'), 'Immediate label');
+  await staysAt(second); assert.equal(await node.getAttribute('aria-label'), 'Immediate label');
+  edits[2].commit(); await waitFor(async () => await frame.locator('#save-status').innerText() === 'All changes saved');
+  console.log('PASS: committed text remains visible while its save is pending');
+
+  const third = await drop(-60, 80); await waitFor(() => edits.length === 4); await staysAt(third);
+  const authoritative = { x: second.x - 80, y: second.y - 30 };
+  store.apply([{ type: 'updateNode', id: graph.nodes[0].id, ...authoritative }], 'Other collaborator', store.revision);
+  edits[3].reject();
+  await waitFor(async () => node.evaluate((e, p) => { const m = e.transform.baseVal.getItem(0).matrix; return Math.hypot(m.e - p.x, m.f - p.y) < .05; }, authoritative));
+  assert.match(await frame.locator('#toast').innerText(), /board changed/i);
+  await staysAt(authoritative);
+  assert.deepEqual(errors, []);
+  console.log('PASS: a rejected move reconciles to the verified server position and reports the conflict');
+} finally {
+  await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+}
