@@ -29,3 +29,13 @@
 button.board-title{display:block;padding:2px 4px;border-radius:5px;min-width:0;text-align:left;line-height:1.4}button.board-title:hover{background:#f0edfa}button.board-title:disabled{opacity:1;cursor:default}.board-title-input{width:260px;max-width:100%;min-width:0;border:1px solid #bcb1ef;border-radius:5px;background:#fff;padding:2px 4px;font-size:14px;font-weight:600;line-height:1.4;color:#414454}
 
 .profile-panel{top:88px;left:24px;width:min(310px,calc(100vw - 48px))}.profile-panel label{display:block;margin:14px 0 6px;font-weight:600}.profile-panel input{width:100%;padding:10px 12px;border:1px solid #ded9f4;border-radius:8px;background:white;margin-bottom:16px}
+
+/* Shared selection uses a solid red outline, independent of your purple selection. */
+.bubble.remote-selected .bubble-shape{stroke:#d75262;stroke-width:4;vector-effect:non-scaling-stroke}
+[data-edge].remote-selected .edge{stroke:#d75262;stroke-width:5;vector-effect:non-scaling-stroke}
+#collaboration-labels{pointer-events:none;position:fixed;inset:0;z-index:7}
+.remote-selection-label{position:fixed;width:max-content;max-width:240px;height:26px;padding:5px 9px;border:1px solid #edbac1;border-radius:9px;background:#fff7f8;color:#aa3043;box-shadow:0 2px 8px #78253810;font-size:11px;font-weight:600;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.draft-recovery{position:fixed;z-index:30;right:22px;bottom:70px;width:320px;max-width:calc(100vw - 32px);padding:16px;border:1px solid #edbac1;border-radius:14px;background:white;box-shadow:0 8px 35px #28334b20}
+.draft-recovery p{font-size:12px;line-height:1.5;color:#7f8694}.draft-recovery textarea{width:100%;height:90px;resize:vertical;border:1px solid #dedfe7;border-radius:8px;padding:8px}.draft-recovery>div{display:flex;justify-content:space-between;margin-top:10px;gap:4px}.draft-recovery button{padding:7px;border-radius:7px;font-size:11px;color:#7161d7}
+
+.draft-recoveries{position:fixed;z-index:30;right:22px;bottom:70px;display:flex;flex-direction:column;gap:10px;max-height:70vh;overflow-y:auto}.draft-recovery{position:relative;right:auto;bottom:auto;flex-shrink:0}

@@ -1,3 +1,4 @@
+import { createPresenceView } from './presence-view.js';
 import { displayName } from './attribution.js';
 import { blobOutline, outlineDistance } from './outline.js';
 import { createPetals } from './petals.js';
@@ -29,6 +30,8 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const petalUI = createPetals({ board, getState: () => state, nodeById: id => nodeById(id), getPhysical: () => physical, radius: n => radius(n), clientToWorld: (x,y) => clientToWorld(x,y), apply: ops => apply(ops), esc, colors, toast, prepare: id => { clearTimeout(editTimer); finishEdit(); closePanel(); select(id); } });
 let confirmedState;
 const pendingEdits = [];
+let editIntent = 0;
+const renderPresence = createPresenceView({ getState: () => state, getPhysical: () => physical, radius: n => radius(n), worldToClient: (x,y) => worldToClient(x,y) });
 const uid = () => crypto.randomUUID();
 const nodeById = id => state?.graph?.nodes.find(n => n.id === id);
 const clientToWorld = (x, y) => ({ x: (x - view.x) / view.zoom, y: (y - 76 - view.y) / view.zoom });
@@ -36,7 +39,7 @@ const worldToClient = (x, y) => ({ x: x * view.zoom + view.x, y: y * view.zoom +
 function toast(message) { const el = document.querySelector('#toast'); el.textContent = message; el.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add('hidden'), 3800); }
 function act(name, value) { return api.command(name, value).catch(e => toast(e.message.replace(/^Error invoking remote method '[^']+': Error: /, ''))); }
 async function runCommand(name, value) { finishTitleEdit(); finishEdit(); await busy; if (!editor) return act(name, value); }
-function apply(ops, after, onError) {
+function apply(ops, after, onError, editLease) {
   const edit = { board: boardKey(state), operations: structuredClone(ops) };
   pendingEdits.push(edit);
   update(confirmedState);
@@ -44,7 +47,7 @@ function apply(ops, after, onError) {
     let next, error;
     try {
       if (boardKey(state) !== edit.board) return;
-      next = await api.apply(edit.operations, confirmedState.revision);
+      next = await api.apply(edit.operations, confirmedState.revision, editLease);
     } catch (e) {
       error = e;
       try { next = await api.getState(); } catch { next = confirmedState; }
@@ -104,7 +107,7 @@ function update(next) {
   state = withPendingEdits(next, pendingEdits);
   renderTitle();
   selected = new Set([...selected].filter(id => nodeById(id))); selectedEdges = new Set([...selectedEdges].filter(id => state.graph?.edges.some(e => e.id === id)));
-  if (editor && !nodeById(editor.id)) { editor.el.remove(); editor = null; }
+  if (editor && !nodeById(editor.id)) { const previous = editor; finishEdit(false); if (previous.el.value !== previous.original) recoverDraft(previous, 'This idea was removed. Your draft is kept here.'); }
   document.querySelector('#save-status').textContent = state.graph ? state.dirty ? 'Saving changes…' : 'All changes saved' : 'Open a board to begin';
   document.querySelector('[data-command="undo"]').disabled = !state.canUndo; document.querySelector('[data-command="redo"]').disabled = !state.canRedo;
   document.querySelector('#empty').classList.toggle('hidden', !!state.graph);
@@ -114,7 +117,7 @@ function update(next) {
   }
   for (const id of physical.keys()) if (!nodeById(id)) physical.delete(id);
   petalUI.reconcile(); renderGraph(); renderSelection();
-  if (changedBoard || first) { selected.clear(); fit(); first = false; }
+  if (changedBoard || first) { selected.clear(); selectedEdges.clear(); renderSelection(); fit(); first = false; }
   if (openPanel === 'session') renderSession();
 }
 function renderGraph() {
@@ -125,6 +128,7 @@ function renderGraph() {
   }).join('');
   petalsLayer.innerHTML = state.graph.nodes.map(n => `<g data-petal-node="${esc(n.id)}">${petalUI.render(n)}</g>`).join('');
   edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
+  renderPresence(performance.now(), true);
 }
 function blob(rx, ry, t, wobble, seed, extra = 0, shape = null, grab = null) {
   return blobOutline(rx, ry, t, wobble, seed, extra, shape, grab).path;
@@ -167,6 +171,7 @@ function frame(now) {
     }
     if (editor) positionEditor();
   }
+  renderPresence(now);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -180,6 +185,7 @@ function fit() {
 function setTool(value) { tool = value; document.querySelectorAll('[data-tool]').forEach(el => el.classList.toggle('active', el.dataset.tool === tool)); board.classList.toggle('creating', tool === 'add'); }
 function select(id, additive = false) { if (!additive) selected.clear(); if (id) { if (additive && selected.has(id)) selected.delete(id); else selected.add(id); } selectedEdges.clear(); renderGraph(); renderSelection(); }
 function renderSelection() {
+  api.selection?.({ kind: selectedEdges.size ? 'edges' : 'nodes', ids: [...(selectedEdges.size ? selectedEdges : selected)].slice(0, 1000) });
   closeShades();
   const el = document.querySelector('#selection-actions'); el.classList.toggle('hidden', !selected.size && !selectedEdges.size);
   if (selectedEdges.size) {
@@ -257,11 +263,29 @@ function addNode(x, y, parent) {
   const ops = [{ type: 'addNode', id, text: 'New idea', x, y, ...(parent ? { parent } : {}) }, ...nudgeLayout({ x, y, text: 'New idea', depth: parent ? generation(nodeById(parent)) + 1 : 1 }, new Set(parent ? [parent] : []))];
   apply(ops, () => { select(id); setTimeout(() => startEdit(id, true), reduced ? 0 : 230); }); setTool('select');
 }
-function startEdit(id, selectAll = false) {
-  if (!nodeById(id)) return; finishEdit(); const n = nodeById(id), el = document.createElement('textarea'); el.className = 'node-editor'; el.value = n.text; el.maxLength = 2000; el.setAttribute('aria-label', 'Edit idea'); el.spellcheck = true; document.body.append(el); editor = { id, el, original: n.text }; select(id); positionEditor(); el.focus(); if (selectAll) el.select();
+async function startEdit(id, selectAll = false, draft = null) {
+  if (!nodeById(id)) return; finishEdit(); const intent = ++editIntent, targetBoard = boardKey(state);
+  await busy;
+  if (intent !== editIntent || targetBoard !== boardKey(state)) return;
+  let lease;
+  try { lease = await api.acquireEdit?.(id); }
+  catch (error) { toast(error.message); return; }
+  if (intent !== editIntent || targetBoard !== boardKey(state) || !nodeById(id)) { await api.releaseEdit?.(lease); return; }
+  const n = nodeById(id), el = document.createElement('textarea'); el.className = 'node-editor'; el.value = draft ?? n.text; el.maxLength = 2000; el.setAttribute('aria-label', 'Edit idea'); el.spellcheck = true; document.body.append(el); editor = { id, el, original: n.text, lease, board: targetBoard }; select(id); positionEditor(); el.focus(); if (selectAll) el.select();
+  if (draft !== null) document.querySelectorAll('.draft-recovery').forEach(panel => { if (panel.dataset.board === targetBoard && panel.dataset.node === id) panel.remove(); });
   el.addEventListener('pointerdown', e => e.stopPropagation()); el.addEventListener('dblclick', e => { e.preventDefault(); e.stopPropagation(); const p = clientToWorld(e.clientX, e.clientY); finishEdit(); addNode(p.x, p.y, id); });
-  el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') finishEdit(false); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finishEdit(); } }); el.addEventListener('blur', () => finishEdit());
+  el.addEventListener('keydown', e => { e.stopPropagation(); if (e.isComposing) return; if (e.key === 'Escape') finishEdit(false); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finishEdit(); } }); el.addEventListener('blur', () => finishEdit());
   el.addEventListener('input', () => positionEditor(true));
+}
+function recoverDraft(previous, message) {
+  document.querySelectorAll('.draft-recovery').forEach(panel => { if (panel.dataset.board === previous.board && panel.dataset.node === previous.id) panel.remove(); });
+  let drafts = document.querySelector('.draft-recoveries'); if (!drafts) { drafts = document.createElement('div'); drafts.className = 'draft-recoveries'; document.body.append(drafts); }
+  const panel = document.createElement('section'); panel.className = 'draft-recovery'; panel.dataset.board = previous.board; panel.dataset.node = previous.id; panel.setAttribute('aria-label', 'Unsaved idea draft');
+  panel.innerHTML = `<strong>Draft kept safely in this tab</strong><p></p><textarea aria-label="Unsaved draft" readonly></textarea><div><button data-retry>Retry editing</button><button data-copy-draft>Copy draft</button><button data-discard>Discard</button></div>`;
+  panel.querySelector('p').textContent = message; panel.querySelector('textarea').value = previous.el.value;
+  panel.querySelector('[data-retry]').onclick = () => { if (previous.board !== boardKey(state) || !nodeById(previous.id)) { toast('Return to the original board to retry, or copy this draft.'); return; } void startEdit(previous.id, false, previous.el.value); };
+  panel.querySelector('[data-copy-draft]').onclick = () => void act('copyNodes', previous.el.value).then(() => toast('Draft copied.'));
+  panel.querySelector('[data-discard]').onclick = () => panel.remove(); drafts.append(panel);
 }
 function positionEditor(resize = false) {
   if (!editor) return; const n = nodeById(editor.id), p = physical.get(editor.id); if (!n || !p) return;
@@ -274,12 +298,13 @@ function positionEditor(resize = false) {
   }
 }
 function finishEdit(commit = true) {
+  ++editIntent;
   if (!editor) return; const previous = editor; editor = null; previous.el.remove();
-  if (commit && nodeById(previous.id) && previous.el.value !== previous.original) apply([{ type: 'updateNode', id: previous.id, text: previous.el.value, before: { text: previous.original } }], undefined, () => {
-    if (editor || !nodeById(previous.id)) return;
-    startEdit(previous.id); editor.el.value = previous.el.value;
-    toast(`The idea now says “${nodeById(previous.id).text.slice(0, 70)}”. Your draft is still open; Enter replaces it, Esc keeps their edit.`);
-  });
+  if (commit && nodeById(previous.id) && previous.el.value !== previous.original) {
+    const saving = apply([{ type: 'updateNode', id: previous.id, text: previous.el.value, before: { text: previous.original } }], undefined, () => recoverDraft(previous, 'The edit could not be saved. Retry when the idea is available, or copy your draft.'), previous.lease);
+    // Keep the lease until the save has completed, including queued optimistic edits.
+    busy = saving.then(() => api.releaseEdit?.(previous.lease));
+  } else void api.releaseEdit?.(previous.lease);
   renderGraph();
 }
 
@@ -412,6 +437,8 @@ document.addEventListener('keyup', e => { if (e.key === ' ') space = false; });
 window.addEventListener('blur', () => { space = false; drag = null; pan = null; activeTarget = null; document.querySelector('#connector-picker').classList.add('hidden'); board.classList.remove('panning'); });
 window.addEventListener('resize', setView);
 api.onState(update); api.onAction(async a => {
+  if (a.type === 'presence') { if (state) { state.presence = a.presence; state.sessionId = a.sessionId; renderPresence(performance.now(), true); } return; }
+  if (a.type === 'editLockLost') { if (editor?.lease?.token === a.lease.token) { const previous = editor; finishEdit(false); if (previous.el.value !== previous.original) recoverDraft(previous, a.lease.message); else toast(a.lease.message); } return; }
   if (a.type === 'error') toast(a.message);
   else if (a.type === 'imported') { selected.clear(); selectedEdges.clear(); physical.clear(); first = true; update(confirmedState); toast('Board imported. Undo restores the previous contents.'); }
   else if (a.type === 'command') runCommand(a.name);

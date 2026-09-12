@@ -1,3 +1,4 @@
+import { createPresenceClient } from './presence-client.js';
 import { boardCode } from './agent-code.js';
 let current, boardId, boardList = [], user, localClipboard = '', listeners = [], actions = [], viewport = {}, agentToken = null, connectionToken = null, pending = 0, started = false, imageBusy = false;
 let lastInteraction = Date.now(), pollTimer, polling = false, failures = 0, rendererReady = false;
@@ -5,20 +6,22 @@ const topUrl = new URL(window.parent.location.href);
 const mcpUrl = () => `${user?.mcpOrigin || location.origin}/mcp?board=${boardId}`;
 const connectionUrl = () => `${user?.mcpOrigin || location.origin}/mcp`;
 const blank = () => ({ graph: null, revision: 0, activity: [], recent: boardList.map(b => b.id), boardList, canUndo: false, canRedo: false, members: [] });
-async function request(path, body) {
-  const response = await fetch('/api/' + path, { ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), cache: 'no-store' });
+async function request(path, body, options = {}) {
+  const response = await fetch('/api/' + path, { ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), cache: 'no-store', ...options });
   const data = await response.json(); if (!response.ok) { const error = new Error(data.error || 'Could not reach the shared board.'); error.status = response.status; throw error; } return data;
 }
 function notify(next) {
   if (next.graph) boardList = boardList.map(b => b.id === (next.boardId || boardId) ? { ...b, title: next.graph.title } : b);
-  current = { ...next, recent: boardList.map(b => b.id), boardList };
+  current = { ...next, sessionId: collaboration.sessionId, recent: boardList.map(b => b.id), boardList };
   for (const fn of listeners) fn(current);
   const status = document.querySelector('#save-status'); if (status) status.textContent = current.graph ? pending ? 'Saving changes…' : 'All changes saved' : 'No board open';
   const presence = document.querySelector('#people'); if (presence) { const count = (current.members || []).filter(m => Date.now() - m.seen < 45000).length; presence.textContent = count > 1 ? `${count} here` : 'Share board'; }
 }
+const collaboration = createPresenceClient({ request, getBoard: () => boardId, receive: presence => { if (current) { current.presence = presence; actions.forEach(fn => fn({ type: 'presence', presence, sessionId: collaboration.sessionId })); } }, lost: lease => actions.forEach(fn => fn({ type: 'editLockLost', lease })) });
+collaboration.start();
 async function refreshList() { boardList = (await request('boards')).boards; }
 async function switchBoard(id) {
-  const next = await request(`boards/${id}`); boardId = id; agentToken = null; started = true; failures = 0; topUrl.searchParams.set('board', id); topUrl.searchParams.delete('invite'); topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(next); lastInteraction = Date.now(); schedulePoll(0);
+  const next = await request(`boards/${id}`); await collaboration.leave(); boardId = id; agentToken = null; started = true; failures = 0; topUrl.searchParams.set('board', id); topUrl.searchParams.delete('invite'); topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(next); lastInteraction = Date.now(); schedulePoll(0);
 }
 async function boot() {
   user = await request('me'); await refreshList();
@@ -67,10 +70,17 @@ async function writeClipboard(text) { localClipboard = text; try { await navigat
 function report(message) { actions.forEach(fn => fn({ type: 'error', message })); }
 window.bloom = {
   async getState() { return started ? current : boot(); },
-  async apply(operations, expectedRevision) {
+  selection(value) { collaboration.select(value); },
+  async acquireEdit(nodeId) {
+    const lease = await collaboration.acquire(nodeId);
+    try { const next = await request(`boards/${lease.board}`); if (lease.board === boardId) notify(next); return lease; }
+    catch (error) { await collaboration.release(lease); throw error; }
+  },
+  releaseEdit(lease) { return collaboration.release(lease); },
+  async apply(operations, expectedRevision, editLease) {
     if (!boardId) throw new Error('Open a board first.'); lastInteraction = Date.now(); pending++; notify(current);
     const id = boardId;
-    const preconditions = { expectedRevision };
+    const preconditions = { expectedRevision, sessionId: collaboration.sessionId, ...(editLease ? { editLease: { nodeId: editLease.nodeId, token: editLease.token } } : {}) };
     if (current.revision === expectedRevision && Number.isInteger(current.contentRevision) && Number.isInteger(current.layoutRevision)) {
       if (operations.some(op => op.type !== 'updateNode' || op.text !== undefined || op.color !== undefined)) preconditions.expectedContentRevision = current.contentRevision;
       if (operations.some(op => ['updateNode', 'addNode'].includes(op.type) && (op.x !== undefined || op.y !== undefined))) preconditions.expectedLayoutRevision = current.layoutRevision;
@@ -88,10 +98,10 @@ window.bloom = {
     if (name === 'new' || name === 'saveAs') { const made = await request('boards', name === 'saveAs' ? { graph: current.graph } : {}); await refreshList(); await switchBoard(made.id); return; }
     if (name === 'open') return upload();
     if (name === 'recent') return switchBoard(value);
-    if (name === 'close') { boardId = null; topUrl.search = ''; topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(blank()); return; }
+    if (name === 'close') { await collaboration.leave(); boardId = null; topUrl.search = ''; topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(blank()); return; }
     if (name === 'save') { if (current.graph) download(current.graph, 'bloom'); return; }
     if (name === 'export') { if (boardId) download(await request(`boards/${boardId}/export`), 'canvas'); return; }
-    if (name === 'undo' || name === 'redo') { if (boardId) notify(await request(`boards/${boardId}/edit`, { action: name, expectedRevision: current.revision })); return; }
+    if (name === 'undo' || name === 'redo') { if (boardId) notify(await request(`boards/${boardId}/edit`, { action: name, expectedRevision: current.revision, sessionId: collaboration.sessionId })); return; }
     if (name === 'copyNodes') return writeClipboard(value);
     if (name === 'pasteNodes') { try { return await navigator.clipboard.readText(); } catch { return localClipboard; } }
     if (name === 'sessionToggle') { await request(`boards/${boardId}/agent`, { enabled: value }); current.agentEnabled = value; return window.bloom.session(); }
@@ -128,13 +138,14 @@ function schedulePoll(delay = pollDelay()) {
   clearTimeout(pollTimer);
   if (!document.hidden && boardId) pollTimer = setTimeout(pollBoard, delay);
 }
-function pollDelay() { return failures ? Math.min(60000, 2000 * 2 ** failures) : Date.now() - lastInteraction < 30000 ? 2000 : 15000; }
+function pollDelay() { return failures ? Math.min(60000, 2000 * 2 ** failures) : (Date.now() - lastInteraction < 30000 || current?.presence?.some(p => p.expires > Date.now() && (p.ids.length || p.editing))) ? 2000 : 15000; }
 async function pollBoard() {
   if (polling) return;
   if (!started || !boardId || pending || document.hidden) { schedulePoll(); return; }
   polling = true; const id = boardId;
   try {
     const next = await request(`boards/${id}/sync`, { revision: current.revision }); failures = 0;
+    if (id === boardId) { current.presence = next.presence || []; actions.forEach(fn => fn({ type: 'presence', presence: current.presence, sessionId: collaboration.sessionId })); }
     if (id !== boardId || next.revision < current.revision || pending) return;
     if (next.state) { if (next.state.revision >= current.revision) notify(next.state); }
     else { const namesChanged = (current.members || []).length !== next.members.length || next.members.some(m => !current.members?.some(old => old.id === m.id && old.name === m.name)); current.members = next.members; if(namesChanged) notify({ ...current, user: { ...current.user, name: next.members.find(m => m.id === current.user?.id)?.name || current.user?.name } }); current.agentEnabled = next.agentEnabled; const people = document.querySelector('#people'); if (people) { const count = next.members.filter(m => Date.now() - m.seen < 45000).length; people.textContent = count > 1 ? `${count} here` : 'Share board'; } }

@@ -42,6 +42,13 @@ try {
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map(t => t.name).sort(), ['edit_board', 'get_board', 'get_board_image', 'list_boards']);
   assert.equal(value(await client.callTool({ name: 'get_board', arguments: {} })).revision, 0);
+  await query('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, ?)', [id, 'lock-smoke', 'Editing human', 'editor', Date.now()]);
+  await query('INSERT INTO edit_locks (board_id, node_id, session_id, user_id, token, expires) VALUES (?, ?, ?, ?, ?, ?)', [id, graph.nodes[0].id, 'smoke-tab', 'lock-smoke', 'smoke-lease', Date.now() + 45000]);
+  const lockedEdit = await client.callTool({ name: 'edit_board', arguments: { expectedRevision: 0, operations: [{ type: 'updateNode', id: graph.nodes[0].id, text: 'Must not overwrite a human draft' }] } });
+  assert.equal(lockedEdit.isError, true); assert.match(lockedEdit.content[0].text, /being edited|lock expired/);
+  assert.equal(value(await client.callTool({ name: 'get_board', arguments: {} })).revision, 0);
+  await query('DELETE FROM edit_locks WHERE board_id = ?', [id]);
+  console.log('PASS: live D1 editing lock blocks MCP text replacement without changing revision/history.');
   const edited = value(await client.callTool({ name: 'edit_board', arguments: { expectedRevision: 0, operations: [{ type: 'addNode', id: 'test-child', parent: graph.nodes[0].id, text: 'Live MCP test' }] } }));
   assert.equal(edited.revision, 1);
   assert.equal(edited.previousRevision, 0);
@@ -218,6 +225,8 @@ try {
     await query('DELETE FROM changes WHERE board_id = ?', [secondId]);
     await query('DELETE FROM boards WHERE id = ?', [secondId]);
     await query('DELETE FROM changes WHERE board_id = ?', [id]);
+    await query('DELETE FROM edit_locks WHERE board_id = ?', [id]);
+    await query('DELETE FROM presence WHERE board_id = ?', [id]);
     await query('DELETE FROM members WHERE board_id = ?', [id]);
     await query('DELETE FROM boards WHERE id = ?', [id]);
     console.log('Temporary test board removed.');

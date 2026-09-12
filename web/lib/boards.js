@@ -1,3 +1,4 @@
+import { readPresence, updatePresence, editGuard } from './presence.js';
 import { importedGraph } from './import-board.js';
 import { profileIdentity, saveProfile, attributionNames, boardActivity } from './profiles.js';
 import { revisions, revisionChanges, checkRevision } from './revisions.js';
@@ -53,7 +54,7 @@ export async function snapshot(board, user, role) {
   const activity = await boardActivity(db(), board.id);
   const presence = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
   const graph = validateGraph(JSON.parse(board.graph));
-  return { graph, attribution: await attributionNames(db(), graph), ...revisions(board), boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity, members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
+  return { presence: await readPresence(db(), board.id), graph, attribution: await attributionNames(db(), graph), ...revisions(board), boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity, members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
 }
 export async function agentSnapshot(board, user, role, options = {}) {
   if (options.sinceRevision !== undefined) {
@@ -113,13 +114,16 @@ export async function changeBoard(board, user, role, input, response = 'full', a
   const sizes = new Map(retained.results.map(row => [row.revision, row.bytes]));
   sizes.set(board.revision, new TextEncoder().encode(board.graph).length);
   limitHistory(past, future, sizes);
+  const guard = editGuard(board, graph, user, input);
   // D1 batches run atomically: update graph, history stacks and physical retention together.
   const result = await db().batch([
-    db().prepare('INSERT INTO changes (board_id, revision, graph, actor, at, kind) SELECT id, revision, graph, ?, ?, ? FROM boards WHERE id = ? AND revision = ?').bind(user.userId === 'agent' ? user.displayName : user.userId, Date.now(), kind, board.id, board.revision),
-    db().prepare('UPDATE boards SET graph = ?, revision = revision + 1, content_revision = ?, layout_revision = ?, updated = ?, past = ?, future = ? WHERE id = ? AND revision = ?').bind(text, contentRevision, layoutRevision, Date.now(), JSON.stringify(past), JSON.stringify(future), board.id, board.revision),
+    db().prepare(`INSERT INTO changes (board_id, revision, graph, actor, at, kind) SELECT id, revision, graph, ?, ?, ? FROM boards WHERE id = ? AND revision = ? AND ${guard.sql}`).bind(user.userId === 'agent' ? user.displayName : user.userId, Date.now(), kind, board.id, board.revision, ...guard.args),
+    db().prepare(`UPDATE boards SET graph = ?, revision = revision + 1, content_revision = ?, layout_revision = ?, updated = ?, past = ?, future = ? WHERE id = ? AND revision = ? AND ${guard.sql}`).bind(text, contentRevision, layoutRevision, Date.now(), JSON.stringify(past), JSON.stringify(future), board.id, board.revision, ...guard.args),
     db().prepare('DELETE FROM changes WHERE board_id = ? AND revision NOT IN (SELECT value FROM boards, json_each(boards.past) WHERE boards.id = ? UNION SELECT value FROM boards, json_each(boards.future) WHERE boards.id = ?)').bind(board.id, board.id, board.id)
   ]);
   if (!result[1].meta.changes) {
+    const allowed = await db().prepare(`SELECT 1 AS ok WHERE ${guard.sql}`).bind(...guard.args).first();
+    if (!allowed) fail("This idea is being edited, or your editing lock expired. Your change was not applied.", 423);
     if (attempt < 2 && (input.expectedContentRevision !== undefined || input.expectedLayoutRevision !== undefined)) {
       const latest = await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first();
       if (latest) return changeBoard(latest, user, role, input, response, attempt + 1);
@@ -163,11 +167,15 @@ export async function handleApi(request, segments) {
     await db().prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, ?) ON CONFLICT (board_id, user_id) DO UPDATE SET seen = excluded.seen').bind(id, user.userId, user.displayName, 'editor', Date.now()).run(); return { joined: true };
   }
   const { board, user, role } = await access(id, request, ['invite', 'agent', 'member'].includes(action), !!action && action !== 'edit' && action !== 'export');
+  if (action === 'presence' && request.method === 'POST') {
+    if (role === 'agent') fail('Presence requires a signed-in board member.', 403);
+    return updatePresence(db(), id, user, input);
+  }
   if (action === 'sync' && request.method === 'POST') {
     const now = Date.now();
     if (role !== 'agent') await db().prepare('UPDATE members SET seen = ? WHERE board_id = ? AND user_id = ? AND seen < ?').bind(now, id, user.userId, now - 20000).run();
     const members = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(id).all();
-    const result = { revision: board.revision, members: members.results, agentEnabled: !!board.agent_enabled, captureRequested: board.agent_enabled && board.image_requested > (board.image_at || 0) && board.image_requested > now - 60000 ? board.image_requested : null };
+    const result = { presence: await readPresence(db(), id), revision: board.revision, members: members.results, agentEnabled: !!board.agent_enabled, captureRequested: board.agent_enabled && board.image_requested > (board.image_at || 0) && board.image_requested > now - 60000 ? board.image_requested : null };
     if (input.revision !== board.revision) {
       const full = await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(id).first();
       return { ...result, state: await snapshot(full, user, role) };
@@ -200,7 +208,7 @@ export async function handleApi(request, segments) {
     }
     return { token: value, enabled: true };
   }
-  if (action === 'member' && request.method === 'POST') { if (!input.userId || input.userId === board.owner) fail('The owner cannot be removed.'); await db().prepare('DELETE FROM members WHERE board_id = ? AND user_id = ?').bind(id, input.userId).run(); return { ok: true }; }
+  if (action === 'member' && request.method === 'POST') { if (!input.userId || input.userId === board.owner) fail('The owner cannot be removed.'); await db().batch([db().prepare('DELETE FROM edit_locks WHERE board_id = ? AND user_id = ?').bind(id, input.userId), db().prepare('DELETE FROM presence WHERE board_id = ? AND user_id = ?').bind(id, input.userId), db().prepare('DELETE FROM members WHERE board_id = ? AND user_id = ?').bind(id, input.userId)]); return { ok: true }; }
   if (action === 'image' && request.method === 'POST') {
     if (typeof input.image !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(input.image) || input.image.length > 700000) fail('Invalid image.');
     if (!Number.isInteger(input.revision) || !Number.isInteger(input.requestedAt)) return { accepted: false };

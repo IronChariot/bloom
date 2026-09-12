@@ -25,6 +25,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET') return send({ configured: connectionConfigured });
       connectionConfigured = true; return send({ token: 'bloom_agent_' + testToken });
     }
+    if (url.pathname.endsWith('/presence')) return send({ presence: [], expires: Date.now() + 45000 });
     if (url.pathname.endsWith('/agent')) return send({ token: testToken, enabled: true });
     if (url.pathname === '/api/boards/pending-test') return send(snapshot());
     if (url.pathname.endsWith('/sync')) return send({ revision: store.revision, members: [], agentEnabled: true,
