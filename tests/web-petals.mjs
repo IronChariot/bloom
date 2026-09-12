@@ -6,15 +6,16 @@ import { chromium } from 'playwright';
 import { GraphStore, newGraph } from '../web/lib/graph.js';
 const store=new GraphStore(newGraph()),root=store.graph.nodes[0].id;
 store.apply([{type:'addNode',id:'a',text:'First branch',parent:root,x:-300,y:-160},{type:'addNode',id:'b',text:'Second branch',parent:root,x:300,y:-160}]);
-const snap=()=>({...store.snapshot(),boardId:'petal-test',dirty:false,recent:[],members:[],role:'owner',user:{id:'email:tester@example.com',name:'tester@example.com'},agentEnabled:false});
+let displayName='tester@example.com', hasDisplayName=false;
+const snap=()=>({...store.snapshot(),boardId:'petal-test',dirty:false,recent:[],members:[{id:'email:tester@example.com',name:displayName,role:'owner',seen:Date.now()}],activity:store.activity.map(a=>({...a,actorId:'email:tester@example.com',actor:displayName})),attribution:{'email:tester@example.com':displayName},role:'owner',user:{id:'email:tester@example.com',name:displayName},agentEnabled:false});
 const server=http.createServer(async(req,res)=>{
   const send=(body,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
   const url=new URL(req.url,'http://localhost');
   if(url.pathname.startsWith('/api/')){
     const chunks=[];for await(const c of req)chunks.push(c);const input=chunks.length?JSON.parse(Buffer.concat(chunks)):{};
-    if(url.pathname==='/api/me')return send({userId:'email:tester@example.com',displayName:'tester@example.com'});
+    if(url.pathname==='/api/me'){if(req.method==='POST'){displayName=input.displayName.trim();hasDisplayName=true;}return send({userId:'email:tester@example.com',displayName,hasDisplayName});}
     if(url.pathname==='/api/boards')return send({boards:[{id:'petal-test',title:'Petal test'}]});
-    if(url.pathname.endsWith('/sync'))return send({revision:store.revision,members:[],agentEnabled:false,...(input.revision!==store.revision?{state:snap()}:{})});
+    if(url.pathname.endsWith('/sync'))return send({revision:store.revision,members:snap().members,agentEnabled:false,...(input.revision!==store.revision?{state:snap()}:{})});
     if(url.pathname.endsWith('/edit')){try{if(input.action==='undo')store.undo();else if(input.action==='redo')store.redo();else store.apply(input.operations,'Test user',input.expectedRevision,'tester@example.com');return send(snap());}catch(e){return send({error:e.message},409);}}
     if(url.pathname==='/api/boards/petal-test')return send(snap());return send({});
   }
@@ -105,6 +106,24 @@ try{
   assert.match(await frame.getByRole('tooltip').innerText(),/tester@example.com/);assert.match(await frame.getByRole('tooltip').innerText(),/Second line/);
   await clickPetal(comment.id);await frame.getByRole('button',{name:'Edit comment',exact:true}).click();await input.fill('Updated note');await frame.getByRole('button',{name:'Confirm comment',exact:true}).click();await saved();
   assert.equal(store.graph.nodes[0].petals[2].comment,'Updated note');
+  await frame.locator('#file-toggle').click(); await frame.getByRole('button',{name:'Your name…',exact:true}).click();
+  const nameInput=frame.getByRole('textbox',{name:'Display name',exact:true});
+  assert.equal(await frame.getByRole('button',{name:'Save name',exact:true}).isDisabled(),true);
+  await nameInput.fill('Sam <&>'); await page.screenshot({path:'artifacts/bloom-profile.png'}); await page.keyboard.press('Enter');
+  await wait(async()=>await frame.getByRole('textbox',{name:'Display name',exact:true}).count()===0);
+  await hoverPetal(comment.id); await frame.getByRole('tooltip').waitFor();
+  assert.match(await frame.getByRole('tooltip').innerText(),/Sam <&>/);
+  assert.ok(!(await frame.getByRole('tooltip').innerText()).includes('tester@example.com'));
+  await frame.getByRole('button',{name:'Agent session',exact:true}).click();
+  assert.match(await frame.locator('.activity-item').first().innerText(),/Sam <&>/);
+  await frame.getByRole('button',{name:'Agent session',exact:true}).click();
+  // Another browser changes the profile without changing the graph revision.
+  displayName='Sam Updated';
+  await wait(async()=>await frame.locator('body').evaluate(async()=>(await window.bloom.getState()).members[0]?.name)==='Sam Updated');
+  await page.mouse.move(100,100); await hoverPetal(comment.id); await frame.getByRole('tooltip').waitFor();
+  assert.match(await frame.getByRole('tooltip').innerText(),/Sam Updated/);
+  console.log('PASS: account name form, existing comment/editor attribution, activity and same-revision profile sync');
+
   await clickPetal(comment.id);assert.equal(await frame.getByRole('button',{name:'Choose emoticon',exact:true}).count(),0);await page.keyboard.press('Escape');
   const plain=store.graph.nodes[0].petals[0],emoji=store.graph.nodes[0].petals[1];
   await clickPetal(emoji.id);assert.equal(await frame.getByRole('button',{name:'Add comment',exact:true}).count(),0);await frame.getByRole('button',{name:'Change petal colour',exact:true}).click();await frame.locator('.petal-color-choice').last().click();await saved();assert.notEqual(store.graph.nodes[0].petals[1].color,'#ffffff');
@@ -122,5 +141,8 @@ try{
   await wait(async()=>await frame.locator(`[data-petal-node="${root}"] [data-petal]`).evaluateAll(els=>els.every(el=>Number(el.getAttribute('transform')?.match(/scale\(([^)]+)\)/)?.[1]||0)>.999)));
   await page.screenshot({path:'artifacts/bloom-petals.png'});
   await page.reload();await node(root).waitFor();assert.equal(await frame.locator(`[data-petal-node="${root}"] [data-petal]`).count(),8);
+  await frame.locator('#file-toggle').click();await frame.getByRole('button',{name:'Your name…',exact:true}).click();
+  assert.equal(await frame.getByRole('textbox',{name:'Display name',exact:true}).inputValue(),'Sam Updated');
+  await page.keyboard.press('Escape');
   assert.deepEqual(errors,[]);console.log('PASS: radial colour/emoticon menus, comments and attribution, conversion rules, animated occupied-slot drag, delete/undo, eight-petal limit and reload persistence');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

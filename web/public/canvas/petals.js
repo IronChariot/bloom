@@ -1,3 +1,4 @@
+import { displayName } from './attribution.js';
 import { petalGeometry, roundedPetalPath } from './petal-geometry.js';
 import { arrangePetals } from './petal-model.js';
 
@@ -96,11 +97,11 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
   function showTip(nodeId,id,element) {
     const petal=petalById(nodeId,id); if(petal?.kind!=='comment'||dragging)return;
     hideTip(); tooltip=document.createElement('div'); tooltip.className='petal-tooltip'; tooltip.setAttribute('role','tooltip');
-    const who=document.createElement('strong'); who.textContent=petal.author||'Unknown author';
+    const who=document.createElement('strong'); who.textContent=displayName(getState(),petal.author);
     const time=document.createElement('time'); time.textContent=petal.createdAt ? new Date(petal.createdAt).toLocaleString() : 'Unknown date';
     const body=document.createElement('div'); body.textContent=petal.comment;
     tooltip.append(who,time,body); tooltip.addEventListener('pointerleave',hideTip);
-    if(petal.updatedAt){const edited=document.createElement('small');edited.textContent=`Edited by ${petal.updatedBy} · ${new Date(petal.updatedAt).toLocaleString()}`;tooltip.append(edited);}
+    if(petal.updatedAt){const edited=document.createElement('small');edited.textContent=`Edited by ${displayName(getState(),petal.updatedBy)} · ${new Date(petal.updatedAt).toLocaleString()}`;tooltip.append(edited);}
     document.body.append(tooltip); const box=element.getBoundingClientRect(), bounds=tooltip.getBoundingClientRect();
     tooltip.style.left=`${Math.max(8,Math.min(innerWidth-bounds.width-8,box.right+10))}px`;
     tooltip.style.top=`${Math.max(84,Math.min(innerHeight-bounds.height-8,box.top))}px`;

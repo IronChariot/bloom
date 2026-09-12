@@ -50,6 +50,12 @@ window.bloom = {
     catch (error) { pending--; try { const next = await request(`boards/${id}`); if (id === boardId) notify(next); } catch {} throw error; }
   },
   async command(name, value) {
+    if (name === 'profile') { user = await request('me'); return user; }
+    if (name === 'setDisplayName') {
+      user = await request('me', { displayName: value });
+      if (boardId) notify(await request(`boards/${boardId}`));
+      return user;
+    }
     if (name === 'new' || name === 'saveAs') { const made = await request('boards', name === 'saveAs' ? { graph: current.graph } : {}); await refreshList(); await switchBoard(made.id); return; }
     if (name === 'open') return upload();
     if (name === 'recent') return switchBoard(value);
@@ -102,7 +108,7 @@ async function pollBoard() {
     const next = await request(`boards/${id}/sync`, { revision: current.revision }); failures = 0;
     if (id !== boardId || next.revision < current.revision || pending) return;
     if (next.state) { if (next.state.revision >= current.revision) notify(next.state); }
-    else { current.members = next.members; current.agentEnabled = next.agentEnabled; const people = document.querySelector('#people'); if (people) { const count = next.members.filter(m => Date.now() - m.seen < 45000).length; people.textContent = count > 1 ? `${count} here` : 'Share board'; } }
+    else { const namesChanged = (current.members || []).length !== next.members.length || next.members.some(m => !current.members?.some(old => old.id === m.id && old.name === m.name)); current.members = next.members; if(namesChanged) notify({ ...current, user: { ...current.user, name: next.members.find(m => m.id === current.user?.id)?.name || current.user?.name } }); current.agentEnabled = next.agentEnabled; const people = document.querySelector('#people'); if (people) { const count = next.members.filter(m => Date.now() - m.seen < 45000).length; people.textContent = count > 1 ? `${count} here` : 'Share board'; } }
     const status = document.querySelector('#save-status'); if (status) status.textContent = 'All changes saved';
     if (next.captureRequested) await supplyImage(id, next.captureRequested);
   } catch (error) {

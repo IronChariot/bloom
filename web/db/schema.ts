@@ -7,3 +7,5 @@ export const changes = sqliteTable('changes', { boardId: text('board_id').notNul
 
 export const agentConnections = sqliteTable('agent_connections', { owner: text('owner').primaryKey(), tokenHash: text('token_hash').notNull().unique(), created: integer('created').notNull() });
 export const agentGrants = sqliteTable('agent_grants', { owner: text('owner').notNull().references(() => agentConnections.owner), boardId: text('board_id').notNull().references(() => boards.id), agentHash: text('agent_hash').notNull() }, t => [primaryKey({ columns: [t.owner, t.boardId] })]);
+
+export const profiles = sqliteTable('profiles', { userId: text('user_id').primaryKey(), displayName: text('display_name').notNull() });

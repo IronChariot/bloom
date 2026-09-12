@@ -142,11 +142,14 @@ try {
   await frame.locator('[data-node="leaf-3"]').waitFor();
   await frame.getByRole('button', { name: 'Fit board to view', exact: true }).click();
   for (let i = 0; i < labels.length; i++) {
-    const rendered = await frame.locator(`[data-node="leaf-${i}"]`).evaluate(el => {
+    let rendered;
+    // Newly synced blobs are still growing; inspect the text after it fits the visible outline.
+    await waitFor(async () => { rendered = await frame.locator(`[data-node="leaf-${i}"]`).evaluate(el => {
       const text = el.querySelector('text'), box = text.getBBox(), shape = el.querySelector('.bubble-shape').getBBox();
       return { lines: [...text.querySelectorAll('tspan')].map(e => e.textContent), font: parseFloat(getComputedStyle(text).fontSize),
         fits: box.x >= shape.x && box.y >= shape.y && box.x + box.width <= shape.x + shape.width && box.y + box.height <= shape.y + shape.height };
     });
+    return rendered.fits; });
     assert.equal(rendered.lines.join('').replace(/\s/g, ''), labels[i].replace(/\s/g, ''));
     assert.ok(rendered.fits, `Leaf ${i} text exceeds its bubble`); assert.ok(rendered.font >= 8);
   }

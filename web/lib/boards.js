@@ -1,3 +1,4 @@
+import { profileIdentity, saveProfile, attributionNames, boardActivity } from './profiles.js';
 import { revisions, revisionChanges, checkRevision } from './revisions.js';
 import { env } from 'cloudflare:workers';
 import { getAuthenticatedUser } from './identity.js';
@@ -8,7 +9,7 @@ import { sealToken, openToken } from './agent-secrets.js';
 import { editDelta, readView } from './agent-views.js';
 export const db = () => { if (!env.DB) throw new Error('Board storage is unavailable.'); return env.DB; };
 export function fail(message, status = 400) { const error = new Error(message); error.status = status; throw error; }
-export async function identity() { const user = await getAuthenticatedUser(); if (!user) fail('Sign in to open this board.', 401); return user; }
+export async function identity() { const user = await getAuthenticatedUser(); if (!user) fail('Sign in to open this board.', 401); return profileIdentity(db(), user); }
 export async function hash(value) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map(n => n.toString(16).padStart(2, '0')).join(''); }
 export const token = () => crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
 export async function agentConnection(request) {
@@ -48,9 +49,10 @@ export async function listBoards(user) {
   return results.results.map(r => ({ id: r.id, title: JSON.parse(r.graph).title, updated: r.updated }));
 }
 export async function snapshot(board, user, role) {
-  const activity = await db().prepare('SELECT actor, kind AS message, at FROM changes WHERE board_id = ? ORDER BY revision DESC LIMIT 12').bind(board.id).all();
+  const activity = await boardActivity(db(), board.id);
   const presence = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
-  return { graph: validateGraph(JSON.parse(board.graph)), ...revisions(board), boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity: activity.results.reverse(), members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
+  const graph = validateGraph(JSON.parse(board.graph));
+  return { graph, attribution: await attributionNames(db(), graph), ...revisions(board), boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity, members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
 }
 export async function agentSnapshot(board, user, role, options = {}) {
   if (options.sinceRevision !== undefined) {
@@ -66,8 +68,8 @@ export async function agentSnapshot(board, user, role, options = {}) {
   if (options.view === 'full' && options.nodeIds === undefined) return snapshot(board, user, role);
   const result = readView(board, options);
   if (options.includeActivity) {
-    const activity = await db().prepare('SELECT actor, kind AS message, at FROM changes WHERE board_id = ? ORDER BY revision DESC LIMIT 12').bind(board.id).all();
-    result.activity = activity.results.reverse();
+    const activity = await boardActivity(db(), board.id);
+    result.activity = activity;
   }
   if (options.includeParticipants) {
     const members = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
@@ -96,7 +98,7 @@ export async function changeBoard(board, user, role, input, response = 'full', a
     const record = await db().prepare('SELECT graph FROM changes WHERE board_id = ? AND revision = ?').bind(board.id, revision).first();
     if (!record) fail('This history entry is unavailable.'); graph = validateGraph(JSON.parse(record.graph)); target.push(board.revision); kind = input.action === 'undo' ? 'Undid a shared change' : 'Redid a shared change';
   } else {
-    store.apply(input.operations, user.displayName, board.revision, user.email || (user.userId.startsWith('email:') ? user.userId.slice(6) : user.displayName)); graph = store.graph;
+    store.apply(input.operations, user.displayName, board.revision, user.userId === 'agent' ? user.displayName : user.email || user.userId); graph = store.graph;
     past.push(board.revision); future.length = 0; kind = store.activity.at(-1).message;
   }
   const changed = revisionChanges(JSON.parse(board.graph), graph);
@@ -109,7 +111,7 @@ export async function changeBoard(board, user, role, input, response = 'full', a
   limitHistory(past, future, sizes);
   // D1 batches run atomically: update graph, history stacks and physical retention together.
   const result = await db().batch([
-    db().prepare('INSERT INTO changes (board_id, revision, graph, actor, at, kind) SELECT id, revision, graph, ?, ?, ? FROM boards WHERE id = ? AND revision = ?').bind(user.displayName, Date.now(), kind, board.id, board.revision),
+    db().prepare('INSERT INTO changes (board_id, revision, graph, actor, at, kind) SELECT id, revision, graph, ?, ?, ? FROM boards WHERE id = ? AND revision = ?').bind(user.userId === 'agent' ? user.displayName : user.userId, Date.now(), kind, board.id, board.revision),
     db().prepare('UPDATE boards SET graph = ?, revision = revision + 1, content_revision = ?, layout_revision = ?, updated = ?, past = ?, future = ? WHERE id = ? AND revision = ?').bind(text, contentRevision, layoutRevision, Date.now(), JSON.stringify(past), JSON.stringify(future), board.id, board.revision),
     db().prepare('DELETE FROM changes WHERE board_id = ? AND revision NOT IN (SELECT value FROM boards, json_each(boards.past) WHERE boards.id = ? UNION SELECT value FROM boards, json_each(boards.future) WHERE boards.id = ?)').bind(board.id, board.id, board.id)
   ]);
@@ -129,7 +131,10 @@ export async function handleApi(request, segments) {
   if (request.method !== 'GET' && request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) fail('Cross-site writes are not allowed.', 403);
   let input = {};
   if (!['GET', 'HEAD'].includes(request.method)) { const raw = await request.text(); if (raw.length > 1_600_000) fail('Request is too large.', 413); input = raw ? JSON.parse(raw) : {}; }
-  if (section === 'me') return { ...await identity(), mcpOrigin: env.MCP_ORIGIN || null };
+  if (section === 'me') {
+    const user = await identity();
+    return { ...(request.method === 'POST' ? await saveProfile(db(), user, input) : user), mcpOrigin: env.MCP_ORIGIN || null };
+  }
   if (section === 'agent-connection') {
     const user = await identity();
     const existing = await db().prepare('SELECT owner FROM agent_connections WHERE owner = ?').bind(user.userId).first();

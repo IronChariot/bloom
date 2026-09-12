@@ -14,6 +14,8 @@ Node moves, text and colour edits stay visible locally while saving. Queued edit
 
 The menu provides new boards, import, download, duplicate, recent boards, JSON Canvas export and close. A downloaded .bloom file is an offline copy; cloud persistence does not depend on downloading. Existing desktop .bloom files import through the menu. Save and export use browser downloads.
 
+Users can choose **File menu → Your name…** to save an account-wide display name. Comments (including their edit attribution), activity and board participants use that name. Existing email-attributed comments and activity resolve to the current profile without rewriting graph history or changing account permissions. Profile changes reach open boards through presence sync. Names are optional; an account without a chosen name retains its existing identity label.
+
 ## Agent access
 
 Agent session provides a one-time Streamable HTTP MCP connection at `https://bloom-mcp.theothersam.workers.dev/mcp`. Configure Hermes once using **One-time agent setup**, then give it a board's 49-character code from **Copy board code**. Redeeming the code stores a persistent grant, so further boards and later visits need no config edits. The connection key alone has no board access. Board code copies remain stable across browser reloads; pause, replacement and revocation are checked on every call. See [Connecting an agent](AGENT_CONNECTION.md).

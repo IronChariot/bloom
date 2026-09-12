@@ -32,7 +32,7 @@ async function denied(board, credential) {
   assert.equal(response.status, 401);
 }
 let created = false;
-const connectionOwner = `connection-${id}`, secondId = `${id}-second`;
+const connectionOwner = `connection-${id}`, secondId = `${id}-second`, profileEmail = `${id}@example.invalid`, profileId = `email:${profileEmail}`;
 try {
   await query('INSERT INTO boards (id, owner, graph, updated, agent_hash, agent_enabled) VALUES (?, ?, ?, ?, ?, 1)', [id, 'smoke-test', JSON.stringify(graph), Date.now(), digest(token)]);
   created = true;
@@ -173,6 +173,23 @@ try {
   console.log('PASS: composed dotted arrows, petal batches/reads/deltas, authenticated authorship, capacity enforcement, occupied-slot movement, comment editing and deletion.');
   console.log('PASS: independent content/layout preconditions, concurrent merge, stale/unsafe edits rejected, since-revision deltas, deletion cascades, empty/future/expired cursors and reverse arrows.');
 
+  // A disposable historical comment and activity resolve through the account profile.
+  const namedFixture = await call('get_board', { view: 'full' });
+  const historicalNote = namedFixture.graph.nodes.find(n=>n.id===rootId).petals.find(p=>p.id==='note');
+  historicalNote.author = profileEmail; historicalNote.updatedBy = profileEmail;
+  await query('INSERT INTO profiles (user_id, display_name) VALUES (?, ?)', [profileId, 'Profile smoke name']);
+  await query('UPDATE boards SET graph = ? WHERE id = ?', [JSON.stringify(namedFixture.graph), secondId]);
+  await query('UPDATE changes SET actor = ? WHERE board_id = ? AND revision = (SELECT MAX(revision) FROM changes WHERE board_id = ?)', [profileEmail, secondId, secondId]);
+  const namedRead = await call('get_board', {view:'full'});
+  assert.equal(namedRead.attribution[profileId], 'Profile smoke name');
+  assert.equal(namedRead.activity.at(-1).actor, 'Profile smoke name');
+  await query('UPDATE profiles SET display_name = ? WHERE user_id = ?', ['Updated profile name', profileId]);
+  const renamedRead = await call('get_board', {view:'full'});
+  assert.equal(renamedRead.attribution[profileId], 'Updated profile name');
+  assert.equal(renamedRead.activity.at(-1).actor, 'Updated profile name');
+  assert.equal(renamedRead.revision, finalRevision);
+  console.log('PASS: historical comment/activity names and profile rename without rewriting graph revisions.');
+
   await query('UPDATE boards SET agent_hash = NULL, agent_enabled = 0 WHERE id = ?', [id]);
   assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: id } })).isError, true);
   assert.equal(value(await resumed.callTool({ name: 'list_boards', arguments: {} })).length, 1);
@@ -195,6 +212,7 @@ try {
 } finally {
   await Promise.allSettled(clients.map(c => c.close()));
   if (created) {
+    await query('DELETE FROM profiles WHERE user_id = ?', [profileId]);
     await query('DELETE FROM agent_grants WHERE owner = ?', [connectionOwner]);
     await query('DELETE FROM agent_connections WHERE owner = ?', [connectionOwner]);
     await query('DELETE FROM changes WHERE board_id = ?', [secondId]);
