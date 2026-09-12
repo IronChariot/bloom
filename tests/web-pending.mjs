@@ -92,7 +92,15 @@ try {
   const authoritative = { x: second.x - 80, y: second.y - 30 };
   store.apply([{ type: 'updateNode', id: graph.nodes[0].id, ...authoritative }], 'Other collaborator', store.revision);
   edits[3].reject();
-  await waitFor(async () => node.evaluate((e, p) => { const m = e.transform.baseVal.getItem(0).matrix; return Math.hypot(m.e - p.x, m.f - p.y) < .05; }, authoritative));
+  // Wait for the spring to settle, not merely cross its target mid-oscillation.
+  await waitFor(async () => node.evaluate(async (e, p) => {
+    for (let i = 0; i < 12; i++) {
+      await new Promise(requestAnimationFrame);
+      const m = document.querySelector(`[data-node="${e.dataset.node}"]`).transform.baseVal.getItem(0).matrix;
+      if (Math.hypot(m.e - p.x, m.f - p.y) >= .05) return false;
+    }
+    return true;
+  }, authoritative));
   assert.match(await frame.locator('#toast').innerText(), /board changed/i);
   await staysAt(authoritative);
   assert.deepEqual(errors, []);
@@ -120,6 +128,26 @@ try {
   await page.screenshot({ path: 'artifacts/bloom-header-and-agent-setup.png' });
   assert.deepEqual(errors, []);
   console.log('PASS: centered responsive board title, copyable board code and board-independent one-time setup');
+  await frame.getByRole('button', { name: 'Agent session', exact: true }).click();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const labels = ['Automatic placement', 'Explore new possibilities together', 'ArchitectureAndCollaboration', 'Wide WWW labels remain readable'];
+  store.apply(labels.map((text, i) => ({ type: 'addNode', id: `leaf-${i}`, text, depth: 2 + i * 2,
+    x: (i % 2 ? 320 : -320), y: (i < 2 ? -180 : 180) })), 'Agent', store.revision);
+  await frame.locator('[data-node="leaf-3"]').waitFor();
+  await frame.getByRole('button', { name: 'Fit board to view', exact: true }).click();
+  for (let i = 0; i < labels.length; i++) {
+    const rendered = await frame.locator(`[data-node="leaf-${i}"]`).evaluate(el => {
+      const text = el.querySelector('text'), box = text.getBBox(), shape = el.querySelector('.bubble-shape').getBBox();
+      return { lines: [...text.querySelectorAll('tspan')].map(e => e.textContent), font: parseFloat(getComputedStyle(text).fontSize),
+        fits: box.x >= shape.x && box.y >= shape.y && box.x + box.width <= shape.x + shape.width && box.y + box.height <= shape.y + shape.height };
+    });
+    assert.equal(rendered.lines.join('').replace(/\s/g, ''), labels[i].replace(/\s/g, ''));
+    assert.ok(rendered.fits, `Leaf ${i} text exceeds its bubble`); assert.ok(rendered.font >= 12);
+  }
+  assert.equal(edits.length, 4, 'Rendering and layout animation must not submit background edits');
+  await page.screenshot({ path: 'artifacts/bloom-deep-labels.png' });
+  assert.deepEqual(errors, []);
+  console.log('PASS: real font measurement, complete deep labels, readable minimum type and no background layout writes');
 } finally {
   await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }

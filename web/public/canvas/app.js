@@ -1,3 +1,4 @@
+import { labelLayout } from './label-layout.js';
 import { createDeformation, stepDeformation, deformPoint } from './deformation.js';
 import { boardKey, withPendingEdits } from './pending-edits.js';
 const api = window.bloom;
@@ -49,18 +50,17 @@ function apply(ops, after, onError) {
   return busy;
 }
 const generation = n => n.root ? 0 : n.depth ?? 1;
-const fontSize = n => Math.max(12, 22 * .91 ** generation(n));
-function radius(n) {
-  const scale = Math.max(.38, .8 ** generation(n));
-  const longest = Math.max(...n.text.split('\n').map(s => s.length));
-  const rx = Math.min(155, Math.max(116, longest * 3.4 + 37)) * scale;
-  const lines = wrap(n.text || ' ', Math.max(5, Math.floor(rx * 1.6 / (fontSize(n) * .53))));
-  return { rx, ry: Math.max(90 * scale, lines.length * fontSize(n) * 1.28 / 1.55) };
+const labelCache = new WeakMap();
+const labelMeasure = document.createElement('canvas').getContext('2d');
+function label(n) {
+  if (!labelCache.has(n)) labelCache.set(n, labelLayout(n, (text, font, root) => {
+    labelMeasure.font = `${root ? 700 : 600} ${font}px Bloom, 'Trebuchet MS', sans-serif`;
+    return labelMeasure.measureText(text).width;
+  }));
+  return labelCache.get(n);
 }
-function wrap(text, width) {
-  const out = []; for (const paragraph of text.split('\n')) { let line = ''; for (const word of paragraph.split(' ')) { if ((line + ' ' + word).trim().length > width && line) { out.push(line); line = ''; } while (word.length > width && !line) { break; } line += (line ? ' ' : '') + word; } out.push(line || ' '); }
-  return out.slice(0, 5).map((s, i) => s.length > width + 3 ? s.slice(0, width) + '…' : i === 4 && out.length > 5 ? s.slice(0, width - 1) + '…' : s);
-}
+const fontSize = n => label(n).font;
+function radius(n) { const { rx, ry } = label(n); return { rx, ry }; }
 function update(next) {
   const oldIds = new Set(state?.graph?.nodes.map(n => n.id) ?? []); const changedBoard = state && (state.graph?.nodes[0]?.id !== next.graph?.nodes[0]?.id);
   confirmedState = next;
@@ -84,8 +84,8 @@ function update(next) {
 function renderGraph() {
   if (!state.graph) { nodesLayer.innerHTML = ''; edgesLayer.innerHTML = ''; return; }
   nodesLayer.innerHTML = state.graph.nodes.map(n => {
-    const r = radius(n), font = fontSize(n), lines = wrap(n.text || ' ', Math.max(5, Math.floor(r.rx * 1.6 / (font * .53)))), p = physical.get(n.id);
-    return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
+    const r = radius(n), { font, lines } = label(n), p = physical.get(n.id);
+    return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
   }).join('');
   edgesLayer.innerHTML = state.graph.edges.map(e => `<path class="edge${selectedEdge === e.id ? ' selected' : ''}" data-edge="${esc(e.id)}" ${e.type === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${e.type === 'both' ? 'marker-start="url(#arrow-end)"' : ''}/>`).join('');
 }

@@ -4,6 +4,7 @@ import { GraphStore, newGraph, validateGraph, fromCanvas, toCanvas } from './gra
 import { limitHistory } from './history.js';
 import { codeToken } from '../public/canvas/agent-code.js';
 import { sealToken, openToken } from './agent-secrets.js';
+import { editDelta, readView } from './agent-views.js';
 export const db = () => { if (!env.DB) throw new Error('Board storage is unavailable.'); return env.DB; };
 export function fail(message, status = 400) { const error = new Error(message); error.status = status; throw error; }
 export async function identity() { const user = await getAuthenticatedUser(); if (!user) fail('Sign in to open this board.', 401); return user; }
@@ -50,6 +51,20 @@ export async function snapshot(board, user, role) {
   const presence = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
   return { graph: validateGraph(JSON.parse(board.graph)), revision: board.revision, boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity: activity.results.reverse(), members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
 }
+export async function agentSnapshot(board, user, role, options = {}) {
+  // Explicit full reads preserve the original response for clients that need it.
+  if (options.view === 'full' && options.nodeIds === undefined) return snapshot(board, user, role);
+  const result = readView(board, options);
+  if (options.includeActivity) {
+    const activity = await db().prepare('SELECT actor, kind AS message, at FROM changes WHERE board_id = ? ORDER BY revision DESC LIMIT 12').bind(board.id).all();
+    result.activity = activity.results.reverse();
+  }
+  if (options.includeParticipants) {
+    const members = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
+    result.members = members.results;
+  }
+  return result;
+}
 export async function createBoard(user, input, title) {
   const graph = input ? input.format === 'bloom' ? validateGraph(input) : fromCanvas(input, title || 'Imported brainstorm') : newGraph();
   const id = crypto.randomUUID(), now = Date.now();
@@ -60,7 +75,7 @@ export async function createBoard(user, input, title) {
   ]);
   return id;
 }
-export async function changeBoard(board, user, role, input) {
+export async function changeBoard(board, user, role, input, response = 'full') {
   if (input.expectedRevision !== board.revision) fail('The board changed. Your edit was not applied; try again.', 409);
   const store = new GraphStore(JSON.parse(board.graph)); store.revision = board.revision;
   const past = JSON.parse(board.past), future = JSON.parse(board.future);
@@ -86,6 +101,8 @@ export async function changeBoard(board, user, role, input) {
     db().prepare('DELETE FROM changes WHERE board_id = ? AND revision NOT IN (SELECT value FROM boards, json_each(boards.past) WHERE boards.id = ? UNION SELECT value FROM boards, json_each(boards.future) WHERE boards.id = ?)').bind(board.id, board.id, board.id)
   ]);
   if (!result[1].meta.changes) fail('Someone changed the board at the same time. Your edit was not applied; try again.', 409);
+  // Use this transaction's graph, not a later SELECT that could see another writer.
+  if (response === 'delta') return editDelta(board.id, board.revision, JSON.parse(board.graph), graph);
   return snapshot(await db().prepare('SELECT id, graph, revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first(), user, role);
 }
 export async function handleApi(request, segments) {

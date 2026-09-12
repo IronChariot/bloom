@@ -47,3 +47,32 @@ The permanent endpoint uses MCP Streamable HTTP. `claim_board({code})` registers
 Legacy `.../mcp?board=BOARD_ID` connections with a board token remain supported with their existing four tools and fixed board/JSON Canvas resources. They are not needed for the new flow. Clients supporting only OAuth without configurable bearer headers still need an adapter; Bloom does not implement an OAuth consent flow. Browser WebMCP remains a separate optional interface using the signed-in browser's permissions.
 
 The old private Site and Cloudflare use separate databases. Changes in one do not synchronize to the other.
+
+## Efficient brainstorming (MCP 0.5)
+
+Use **read → one batch → targeted verification**. The default remote MCP responses are now smaller; connection keys, board codes, tool names and permissions are unchanged. Clients that cached the old tool schemas should refresh discovery (reconnect/restart the gateway if necessary).
+
+1. `get_board({boardId})` returns `{boardId, revision, graph: {title, nodes, edges}}`. Nodes contain only `id` and `text`; edges retain their stable ID, source, target and type. These are brainstorming data, not an exportable full Bloom file.
+2. `edit_board` returns `{boardId, previousRevision, revision, added, updated, removed}`. Added/updated nodes and edges are complete entities, including automatically chosen positions and styling. Removed entities are `nodeIds`/`edgeIds`; deleting nodes also reports their removed incident edges. A changed board title appears as `title`. The revision belongs to exactly this committed edit; another collaborator may subsequently advance it.
+3. `get_board({boardId, nodeIds: ["plan-a", "step-a"]})` reads just those nodes and all edges touching them. `scope.partial` is true; `missingNodeIds` confirms absent/deleted nodes, and `boundaryNodeIds` lists edge endpoints outside the selection. Do not treat this partial graph as a replacement for a cached complete board.
+
+For example, after reading revision 12, submit this single batch (replace the board and existing parent IDs):
+
+```json
+{
+  "boardId": "YOUR_BOARD_ID",
+  "expectedRevision": 12,
+  "operations": [
+    {"type": "addNode", "id": "plan-a", "text": "Try a prototype", "parent": "EXISTING_NODE_ID"},
+    {"type": "addNode", "id": "step-a", "text": "Sketch the interaction", "parent": "plan-a"},
+    {"type": "addNode", "id": "step-b", "text": "Test it together", "parent": "plan-a"},
+    {"type": "connect", "source": "step-a", "target": "step-b", "style": "dotted"}
+  ]
+}
+```
+
+Choose short IDs that are unique within the board; they stay stable. Parents precede children in a batch. Omitting coordinates lets Bloom place each addition; omitting colour and depth uses branch styling and the parent's next generation. No intermediate calls are needed to discover IDs. Up to 200 mixed operations commit atomically, or none do.
+
+Optional read flags: `includeLayout: true` adds position, colour, root and depth; `includeActivity: true` adds recent history; `includeParticipants: true` adds members. `view: "full"` without a node selection restores the original detailed snapshot, including browser metadata, history and members. With a selection, full view contains only selected full entities and scope information. `edit_board({..., response: "full"})` preserves the original full response when a client needs it. Default edit deltas need no further read to discover generated properties; use a targeted read when verification of current state is useful.
+
+Revision checks deliberately still include coordinate-only edits. The renderer's springs do not write revisions; dragging, spacing out ideas and sprouting nodes near existing ideas can write layout changes. A stale batch remains rejected, including after layout-only changes. Re-read and reconsider the batch; do not blindly replace its revision and retry. A changes-since cursor and separate semantic/layout preconditions are deferred; neither is required for compact reads or edit receipts. Screenshots remain optional and keep their existing freshness/retry guidance.
