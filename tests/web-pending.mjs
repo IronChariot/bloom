@@ -124,6 +124,12 @@ try {
   await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('mcp_servers:'));
   const setup = await page.evaluate(() => navigator.clipboard.readText());
   assert.match(setup, /bloom_agent_/); assert.ok(!setup.includes('?board='));
+  await frame.locator('.agent-setup summary').click();
+  await frame.getByRole('button', { name: 'Copy one-time Codex setup', exact: true }).click();
+  await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('[mcp_servers.bloom]'));
+  const codexSetup = await page.evaluate(() => navigator.clipboard.readText());
+  assert.ok(codexSetup.includes('Authorization = "Bearer bloom_agent_' + testToken + '"'));
+  assert.ok(!codexSetup.includes('?board='));
   await fs.mkdir('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/bloom-header-and-agent-setup.png' });
   assert.deepEqual(errors, []);
@@ -192,6 +198,35 @@ try {
   await page.keyboard.press('Escape'); assert.equal(await frame.locator('.shade-picker').count(), 0);
   assert.equal(edits.length, 8); assert.deepEqual(errors, []);
   console.log('PASS: short colour click, half-second hold without recolouring, shade selection and keyboard dismissal');
+
+  const heading = frame.getByRole('button', { name: 'Rename board', exact: true });
+  const nameInput = frame.getByRole('textbox', { name: 'Board name', exact: true });
+  await heading.focus(); await page.keyboard.press('Enter'); await nameInput.fill('Our next brainstorm');
+  store.apply([{type:'updateNode',id:'leaf-3',color:'#ed7d9c'}]);
+  await waitFor(async () => (await frame.locator('body').evaluate(async () => (await window.bloom.getState()).revision)) === store.revision);
+  assert.equal(await nameInput.inputValue(), 'Our next brainstorm');
+  await page.screenshot({path:'artifacts/bloom-title-edit.png'});
+  await page.keyboard.press('Enter'); await waitFor(() => edits.length === 9);
+  assert.equal(await heading.innerText(), 'Our next brainstorm');
+  await staysAt(authoritative); assert.equal(await heading.innerText(), 'Our next brainstorm');
+  edits[8].commit(); await waitFor(async () => await frame.locator('#save-status').innerText() === 'All changes saved');
+  await heading.click(); await nameInput.fill('Unconfirmed name'); await page.keyboard.press('Enter');
+  await waitFor(() => edits.length === 10); edits[9].reject();
+  await waitFor(async () => await heading.innerText() === 'Our next brainstorm');
+  await heading.click(); await nameInput.fill('Named by clicking away');
+  await frame.getByRole('button', {name:'Zoom in',exact:true}).click();
+  await waitFor(() => edits.length === 11); edits[10].commit();
+  await waitFor(async () => await frame.locator('#save-status').innerText() === 'All changes saved');
+  await heading.click(); await nameInput.fill('Discard this'); await page.keyboard.press('Escape');
+  assert.equal(await heading.innerText(), 'Named by clicking away'); assert.equal(edits.length, 11);
+  await heading.click(); await nameInput.fill('   '); await page.keyboard.press('Enter');
+  assert.equal(await heading.innerText(), 'Named by clicking away'); assert.equal(edits.length, 11);
+  await frame.locator('#file-toggle').click();
+  assert.equal(await frame.locator('[data-recent="pending-test"]').innerText(), 'Named by clicking away');
+  await page.reload(); await frame.locator('#board-title').waitFor();
+  assert.equal(await frame.locator('#board-title').innerText(), 'Named by clicking away');
+  assert.deepEqual(errors, []);
+  console.log('PASS: title Enter/blur save, optimistic pending display, rejection recovery, Escape, empty names, recent title and reload');
 
 } finally {
   await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

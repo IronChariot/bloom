@@ -6,14 +6,16 @@ export function withPendingEdits(confirmed, edits) {
   const local = edits.filter(edit => edit.board === boardKey(confirmed));
   if (!confirmed?.graph || !local.length) return confirmed;
   const patches = new Map();
+  let title = confirmed.graph.title;
   for (const edit of local) for (const op of edit.operations) {
+    if (op.type === 'rename') { title = op.title; continue; }
     if (op.type === 'colorNodes') { for (const id of op.ids) patches.set(id, { ...patches.get(id), color: op.color }); continue; }
     if (op.type !== 'updateNode') continue;
     const patch = patches.get(op.id) || {};
     for (const key of ['x', 'y', 'text', 'color']) if (op[key] !== undefined) patch[key] = op[key];
     patches.set(op.id, patch);
   }
-  return { ...confirmed, dirty: true, graph: { ...confirmed.graph,
+  return { ...confirmed, dirty: true, graph: { ...confirmed.graph, title,
     nodes: confirmed.graph.nodes.map(node => patches.has(node.id) ? { ...node, ...patches.get(node.id) } : node)
   } };
 }

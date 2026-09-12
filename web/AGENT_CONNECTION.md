@@ -20,6 +20,24 @@ The connection key is private. You may instead put it in the profile's `~/.herme
 
 This permanent connection initially has **no board permissions**, including boards owned by the person who created it. There is one connection key per Bloom account; using it in several agents shares the same set of board grants. The UI can replace a lost key: the old key stops working, while the new key retains previously granted boards. A copy is offered only in the browser that generated it; Bloom stores its hash, not a recoverable connection key.
 
+## One-time Codex setup (all projects on this host)
+
+Add Bloom to your user-level `~/.codex/config.toml` (Windows default: `C:\Users\YOUR_USER\.codex\config.toml`), preserving existing settings. Do not put it in a project's `.codex/config.toml` if you want it available across projects. Restart Codex after setup.
+
+**Agent session → One-time agent setup → Copy one-time Codex setup** supplies this block when the current browser still has the connection key:
+
+```toml
+[mcp_servers.bloom]
+url = "https://bloom-mcp.theothersam.workers.dev/mcp"
+http_headers = { Authorization = "Bearer YOUR_BLOOM_CONNECTION_KEY" }
+```
+
+If you already configured Hermes, use the same `bloom_agent_...` key from its Authorization header. Do not replace the connection key just to add Codex: replacement disconnects existing clients. The key grants Codex the same already-claimed boards as Hermes. It is different from the per-board `bloom_...` code.
+
+No plugin, skill file or per-project configuration is required. In a future task, ask Codex to connect using a board code and describe the changes you want. Bloom's MCP tool descriptions cover claiming, reading and batching edits. The grant persists; `list_boards` discovers boards already granted to this connection. Tool approval settings still apply. This local configuration is per host, not automatically synchronized to another machine or a hosted Codex environment.
+
+For environment-based secret storage, replace `http_headers` with `bearer_token_env_var = "BLOOM_CONNECTION_KEY"` and supply that variable to the Codex process. The simplest desktop setup is the private user configuration above. See [official Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
 ## Grant a board during a conversation
 
 On any board you own, choose **Agent session → Copy board code**. Paste the 49-character `bloom_...` code privately to Hermes, for example:

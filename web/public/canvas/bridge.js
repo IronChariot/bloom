@@ -10,6 +10,7 @@ async function request(path, body) {
   const data = await response.json(); if (!response.ok) { const error = new Error(data.error || 'Could not reach the shared board.'); error.status = response.status; throw error; } return data;
 }
 function notify(next) {
+  if (next.graph) boardList = boardList.map(b => b.id === (next.boardId || boardId) ? { ...b, title: next.graph.title } : b);
   current = { ...next, recent: boardList.map(b => b.id), boardList };
   for (const fn of listeners) fn(current);
   const status = document.querySelector('#save-status'); if (status) status.textContent = current.graph ? pending ? 'Saving changes…' : 'All changes saved' : 'No board open';
@@ -61,8 +62,12 @@ window.bloom = {
     if (name === 'sessionToggle') { await request(`boards/${boardId}/agent`, { enabled: value }); current.agentEnabled = value; return window.bloom.session(); }
     if (name === 'revokeSession') { await request(`boards/${boardId}/agent`, { revoke: true }); agentToken = null; current.agentEnabled = false; return window.bloom.session(); }
     if (name === 'rotateSession') { agentToken = (await request(`boards/${boardId}/agent`, {})).token; current.agentEnabled = true; return window.bloom.session(); }
-    if (name === 'copyHermes' || name === 'replaceConnection') {
+    if (name === 'copyHermes' || name === 'copyCodex' || name === 'replaceConnection') {
       if (!connectionToken || name === 'replaceConnection') connectionToken = (await request('agent-connection', { replace: name === 'replaceConnection' })).token;
+      if (name === 'copyCodex') {
+        await writeClipboard(`[mcp_servers.bloom]\nurl = ${JSON.stringify(connectionUrl())}\nhttp_headers = { Authorization = ${JSON.stringify('Bearer ' + connectionToken)} }\n`);
+        return;
+      }
       await writeClipboard(`mcp_servers:\n  bloom:\n    url: "${connectionUrl()}"\n    headers:\n      Authorization: "Bearer ${connectionToken}"\n`);
       return;
     }

@@ -25,3 +25,5 @@
 @media(prefers-reduced-motion:no-preference){.petal-choice{animation:petal-choice-in .15s ease-out}@keyframes petal-choice-in{from{opacity:0;scale:.8}to{opacity:1;scale:1}}}
 
 .petal-tooltip{pointer-events:auto;overflow:auto}
+
+button.board-title{display:block;padding:2px 4px;border-radius:5px;min-width:0;text-align:left;line-height:1.4}button.board-title:hover{background:#f0edfa}button.board-title:disabled{opacity:1;cursor:default}.board-title-input{width:260px;max-width:100%;min-width:0;border:1px solid #bcb1ef;border-radius:5px;background:#fff;padding:2px 4px;font-size:14px;font-weight:600;line-height:1.4;color:#414454}
