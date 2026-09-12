@@ -1,7 +1,9 @@
-let current, boardId, boardList = [], user, localClipboard = '', listeners = [], actions = [], viewport = {}, agentToken = null, pending = 0, started = false, imageBusy = false;
+import { boardCode } from './agent-code.js';
+let current, boardId, boardList = [], user, localClipboard = '', listeners = [], actions = [], viewport = {}, agentToken = null, connectionToken = null, pending = 0, started = false, imageBusy = false;
 let lastInteraction = Date.now(), pollTimer, polling = false, failures = 0, rendererReady = false;
 const topUrl = new URL(window.parent.location.href);
 const mcpUrl = () => `${user?.mcpOrigin || location.origin}/mcp?board=${boardId}`;
+const connectionUrl = () => `${user?.mcpOrigin || location.origin}/mcp`;
 const blank = () => ({ graph: null, revision: 0, activity: [], recent: boardList.map(b => b.id), boardList, canUndo: false, canRedo: false, members: [] });
 async function request(path, body) {
   const response = await fetch('/api/' + path, { ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), cache: 'no-store' });
@@ -54,17 +56,26 @@ window.bloom = {
     if (name === 'sessionToggle') { await request(`boards/${boardId}/agent`, { enabled: value }); current.agentEnabled = value; return window.bloom.session(); }
     if (name === 'revokeSession') { await request(`boards/${boardId}/agent`, { revoke: true }); agentToken = null; current.agentEnabled = false; return window.bloom.session(); }
     if (name === 'rotateSession') { agentToken = (await request(`boards/${boardId}/agent`, {})).token; current.agentEnabled = true; return window.bloom.session(); }
-    if (name === 'copySession' || name === 'copyHermes' || name === 'copyAgentToken') {
+    if (name === 'copyHermes' || name === 'replaceConnection') {
+      if (!connectionToken || name === 'replaceConnection') connectionToken = (await request('agent-connection', { replace: name === 'replaceConnection' })).token;
+      await writeClipboard(`mcp_servers:\n  bloom:\n    url: "${connectionUrl()}"\n    headers:\n      Authorization: "Bearer ${connectionToken}"\n`);
+      return;
+    }
+    if (name === 'copyBoardCode') {
+      if (!boardId) throw new Error('Open a board first.');
+      const result = await request(`boards/${boardId}/agent`, { reuse: true }); agentToken = result.token; current.agentEnabled = result.enabled;
+      await writeClipboard(boardCode(agentToken)); return;
+    }
+    if (name === 'copySession' || name === 'copyAgentToken') {
       if (!boardId) throw new Error('Open a board first.');
       if (!agentToken) agentToken = (await request(`boards/${boardId}/agent`, {})).token;
       const url = mcpUrl();
       if (name === 'copyAgentToken') { await writeClipboard(agentToken); return; }
-      if (name === 'copyHermes') { await writeClipboard(`mcp_servers:\n  bloom:\n    url: "${url}"\n    headers:\n      Authorization: "Bearer \${BLOOM_TOKEN}"\n`); return; }
       await writeClipboard(JSON.stringify({ mcpServers: { bloom: { url, headers: { Authorization: `Bearer ${agentToken}` } } } }, null, 2)); return;
     }
     throw new Error('Unknown action.');
   },
-  async session() { return { url: boardId ? mcpUrl() : 'Open a board first', enabled: !!current?.agentEnabled }; },
+  async session() { const connection = await request('agent-connection'); return { url: boardId ? mcpUrl() : 'Open a board first', connectionUrl: connectionUrl(), connectionConfigured: connection.configured, canCopyConnection: !!connectionToken, enabled: !!current?.agentEnabled }; },
   viewport(value) { viewport = value; }, flushed() {},
   onState(fn) { listeners.push(fn); }, onAction(fn) { actions.push(fn); }, onAgent() {}
 };

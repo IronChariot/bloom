@@ -2,11 +2,34 @@ import { env } from 'cloudflare:workers';
 import { getAuthenticatedUser } from './identity.js';
 import { GraphStore, newGraph, validateGraph, fromCanvas, toCanvas } from './graph.js';
 import { limitHistory } from './history.js';
+import { codeToken } from '../public/canvas/agent-code.js';
+import { sealToken, openToken } from './agent-secrets.js';
 export const db = () => { if (!env.DB) throw new Error('Board storage is unavailable.'); return env.DB; };
 export function fail(message, status = 400) { const error = new Error(message); error.status = status; throw error; }
 export async function identity() { const user = await getAuthenticatedUser(); if (!user) fail('Sign in to open this board.', 401); return user; }
 export async function hash(value) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map(n => n.toString(16).padStart(2, '0')).join(''); }
 export const token = () => crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
+export async function agentConnection(request) {
+  const key = request.headers.get('Authorization')?.replace(/^Bearer /, '');
+  if (!/^bloom_agent_[a-f0-9]{64}$/.test(key || '')) return null;
+  return db().prepare('SELECT owner FROM agent_connections WHERE token_hash = ?').bind(await hash(key)).first();
+}
+export async function claimAgentBoard(owner, code) {
+  const digest = await hash(codeToken(code));
+  const board = await db().prepare('SELECT id, json_extract(graph, \'$.title\') AS title FROM boards WHERE agent_hash = ? AND agent_enabled = 1').bind(digest).first();
+  if (!board) fail('This board code is invalid, revoked or paused.', 403);
+  await db().prepare('INSERT INTO agent_grants (owner, board_id, agent_hash) VALUES (?, ?, ?) ON CONFLICT (owner, board_id) DO UPDATE SET agent_hash = excluded.agent_hash').bind(owner, board.id, digest).run();
+  return { boardId: board.id, title: board.title, message: 'Board connected. Use its boardId with get_board and edit_board. Access is remembered until revoked; the code need not be sent again.' };
+}
+export async function listAgentBoards(owner) {
+  return (await db().prepare('SELECT b.id, json_extract(b.graph, \'$.title\') AS title, b.updated FROM boards b JOIN agent_grants g ON g.board_id = b.id AND g.agent_hash = b.agent_hash WHERE g.owner = ? AND b.agent_enabled = 1 ORDER BY b.updated DESC LIMIT 50').bind(owner).all()).results;
+}
+export async function accessAgentBoard(owner, id, includeImage = false) {
+  if (!id || id.length > 100) fail('Choose a boardId from list_boards, or use claim_board with a board code first.', 400);
+  const board = await db().prepare(`SELECT b.id, b.graph, b.revision, b.past, b.future, b.agent_enabled${includeImage ? ', b.image, b.image_at, b.image_revision, b.image_requested' : ''} FROM boards b JOIN agent_grants g ON g.board_id = b.id AND g.agent_hash = b.agent_hash WHERE g.owner = ? AND b.id = ? AND b.agent_enabled = 1`).bind(owner, id).first();
+  if (!board) fail('This connection has no active grant for that board. Ask its owner for a board code.', 403);
+  return { board, user: { userId: 'agent', displayName: 'AI collaborator' }, role: 'agent' };
+}
 export async function access(id, request, ownerOnly = false, lightweight = false, includeImage = false) {
   if (!id || id.length > 100) fail('Choose a board.', 404);
   const columns = 'id, owner, revision, agent_enabled, agent_hash, image_at, image_requested, image_revision';
@@ -71,6 +94,17 @@ export async function handleApi(request, segments) {
   let input = {};
   if (!['GET', 'HEAD'].includes(request.method)) { const raw = await request.text(); if (raw.length > 1_600_000) fail('Request is too large.', 413); input = raw ? JSON.parse(raw) : {}; }
   if (section === 'me') return { ...await identity(), mcpOrigin: env.MCP_ORIGIN || null };
+  if (section === 'agent-connection') {
+    const user = await identity();
+    const existing = await db().prepare('SELECT owner FROM agent_connections WHERE owner = ?').bind(user.userId).first();
+    if (request.method === 'GET') return { configured: !!existing };
+    if (request.method !== 'POST') fail('Method not allowed.', 405);
+    if (existing && !input.replace) fail('A Bloom connection key already exists. Use Replace connection key if you need a new copy; this disconnects clients using the previous key.', 409);
+    const value = 'bloom_agent_' + token();
+    const saved = await db().prepare(`INSERT INTO agent_connections (owner, token_hash, created) VALUES (?, ?, ?) ON CONFLICT (owner) ${input.replace ? 'DO UPDATE SET token_hash = excluded.token_hash, created = excluded.created' : 'DO NOTHING'}`).bind(user.userId, await hash(value), Date.now()).run();
+    if (!saved.meta.changes) fail('A connection key was already created. Use that key or explicitly replace it.', 409);
+    return { token: value };
+  }
   if (section !== 'boards') fail('Not found.', 404);
   if (!id) {
     const user = await identity();
@@ -100,9 +134,26 @@ export async function handleApi(request, segments) {
   if (action === 'presence' && request.method === 'POST') { if (role !== 'agent') await db().prepare('UPDATE members SET seen = ?, name = ? WHERE board_id = ? AND user_id = ?').bind(Date.now(), user.displayName, id, user.userId).run(); return { ok: true }; }
   if (action === 'invite' && request.method === 'POST') { const value = input.revoke ? null : token(); await db().prepare('UPDATE boards SET invite_hash = ? WHERE id = ?').bind(value ? await hash(value) : null, id).run(); return { token: value }; }
   if (action === 'agent' && request.method === 'POST') {
-    if (input.revoke) { await db().prepare('UPDATE boards SET agent_hash = NULL, agent_enabled = 0 WHERE id = ?').bind(id).run(); return { enabled: false }; }
+    if (input.revoke) { await db().prepare('UPDATE boards SET agent_hash = NULL, agent_secret = NULL, agent_enabled = 0 WHERE id = ?').bind(id).run(); return { enabled: false }; }
     if ('enabled' in input) { await db().prepare('UPDATE boards SET agent_enabled = ? WHERE id = ?').bind(input.enabled ? 1 : 0, id).run(); return { enabled: !!input.enabled }; }
-    const value = token(); await db().prepare('UPDATE boards SET agent_hash = ?, agent_enabled = 1 WHERE id = ?').bind(await hash(value), id).run(); return { token: value };
+    if (input.reuse) {
+      const saved = await db().prepare('SELECT agent_hash, agent_secret FROM boards WHERE id = ?').bind(id).first();
+      if (saved.agent_secret) {
+        const value = await openToken(saved.agent_secret, env.AGENT_CODE_KEY, id);
+        if (await hash(value) !== saved.agent_hash) fail('Stored board code does not match. Replace it to issue a new code.', 409);
+        return { token: value, enabled: !!board.agent_enabled };
+      }
+    }
+    const value = token();
+    const sealed = env.AGENT_CODE_KEY ? await sealToken(value, env.AGENT_CODE_KEY, id) : null;
+    if (input.reuse && !sealed) fail('Board code storage is not configured.', 503);
+    const saved = await db().prepare(`UPDATE boards SET agent_hash = ?, agent_secret = ?, agent_enabled = 1 WHERE id = ?${input.reuse ? ' AND agent_secret IS NULL' : ''}`).bind(await hash(value), sealed, id).run();
+    if (input.reuse && !saved.meta.changes) {
+      const winner = await db().prepare('SELECT agent_secret, agent_enabled FROM boards WHERE id = ?').bind(id).first();
+      if (!winner?.agent_secret) fail('The code changed while copying. Try again.', 409);
+      return { token: await openToken(winner.agent_secret, env.AGENT_CODE_KEY, id), enabled: !!winner.agent_enabled };
+    }
+    return { token: value, enabled: true };
   }
   if (action === 'member' && request.method === 'POST') { if (!input.userId || input.userId === board.owner) fail('The owner cannot be removed.'); await db().prepare('DELETE FROM members WHERE board_id = ? AND user_id = ?').bind(id, input.userId).run(); return { ok: true }; }
   if (action === 'image' && request.method === 'POST') {

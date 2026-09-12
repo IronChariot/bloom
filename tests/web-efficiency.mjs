@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { limitHistory, HISTORY_BYTES } from '../web/lib/history.js';
 
 // Exercise the actual browser scheduler with a controlled clock and network.
-const source = await fs.readFile('web/public/canvas/bridge.js', 'utf8');
+const source = (await fs.readFile('web/public/canvas/bridge.js', 'utf8')).replace(/^import .*;\r?\n/gm, '');
 let now = 100000, nextTimer = 0, calls = [], timers = new Map(), listeners = {}, fail = false;
 const fakeDocument = { hidden: false, querySelector: () => null, addEventListener: (name, fn) => { listeners[name] = fn; } };
 const sandbox = { URL, Date: class extends Date { static now() { return now; } }, console, document: fakeDocument,

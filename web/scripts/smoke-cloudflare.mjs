@@ -5,6 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { cfApi, accountId } from './cf-api.mjs';
 import { newGraph } from '../lib/graph.js';
+import { boardCode } from '../public/canvas/agent-code.js';
 
 // Runs against the configured deployment. Mutations affect only a temporary board.
 const config = JSON.parse(await fs.readFile(new URL('../cloudflare/agent.jsonc', import.meta.url), 'utf8'));
@@ -18,7 +19,7 @@ const query = async (sql, params = []) => {
 const digest = value => createHash('sha256').update(value).digest('hex');
 const id = `smoke-${randomUUID()}`, token = randomBytes(32).toString('hex');
 const graph = newGraph(), clients = [];
-const url = board => new URL(`/mcp?board=${board}`, origin);
+const url = board => new URL(board ? `/mcp?board=${board}` : '/mcp', origin);
 async function connect(board, credential) {
   const client = new Client({ name: 'bloom-cloudflare-smoke', version: '1.0.0' });
   clients.push(client);
@@ -31,6 +32,7 @@ async function denied(board, credential) {
   assert.equal(response.status, 401);
 }
 let created = false;
+const connectionOwner = `connection-${id}`, secondId = `${id}-second`;
 try {
   await query('INSERT INTO boards (id, owner, graph, updated, agent_hash, agent_enabled) VALUES (?, ?, ?, ?, ?, 1)', [id, 'smoke-test', JSON.stringify(graph), Date.now(), digest(token)]);
   created = true;
@@ -67,10 +69,49 @@ try {
     const response = await fetch(config.vars.BROWSER_ORIGIN + path, { redirect: 'manual', headers: { 'oai-authenticated-user-id': 'email:theothersam@gmail.com' } });
     assert.ok([302, 401, 403, 503].includes(response.status), `Human authentication gate failed on ${path}: ${response.status}`);
   }
+  const connectionKey = 'bloom_agent_' + randomBytes(32).toString('hex');
+  const secondToken = randomBytes(32).toString('hex');
+  await query('INSERT INTO agent_connections (owner, token_hash, created) VALUES (?, ?, ?)', [connectionOwner, digest(connectionKey), Date.now()]);
+  await query('UPDATE boards SET agent_enabled = 1, agent_hash = ? WHERE id = ?', [digest(token), id]);
+  await query('INSERT INTO boards (id, owner, graph, updated, agent_hash, agent_enabled) VALUES (?, ?, ?, ?, ?, 1)', [secondId, 'another-owner', JSON.stringify(graph), Date.now(), digest(secondToken)]);
+  const general = await connect(null, connectionKey);
+  assert.equal((await general.listTools()).tools.length, 5);
+  assert.deepEqual(value(await general.callTool({ name: 'list_boards', arguments: {} })), []);
+  assert.equal((await general.callTool({ name: 'get_board', arguments: { boardId: id } })).isError, true);
+  assert.equal((await general.callTool({ name: 'claim_board', arguments: { code: 'bloom_invalid' } })).isError, true);
+  for (let i = 0; i < 2; i++) assert.equal(value(await general.callTool({ name: 'claim_board', arguments: { code: boardCode(token) } })).boardId, id);
+  assert.equal(value(await general.callTool({ name: 'get_board', arguments: { boardId: id } })).boardId, id);
+  const resumed = await connect(null, connectionKey);
+  assert.equal(value(await resumed.callTool({ name: 'list_boards', arguments: {} })).length, 1);
+  assert.equal(value(await resumed.callTool({ name: 'claim_board', arguments: { code: boardCode(secondToken) } })).boardId, secondId);
+  assert.equal(value(await resumed.callTool({ name: 'list_boards', arguments: {} })).length, 2);
+  const claimedEdit = value(await resumed.callTool({ name: 'edit_board', arguments: { boardId: secondId, expectedRevision: 0, operations: [{ type: 'rename', title: 'Persistent grant edit' }] } }));
+  assert.equal(claimedEdit.revision, 1);
+  await query('UPDATE boards SET agent_hash = NULL, agent_enabled = 0 WHERE id = ?', [id]);
+  assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: id } })).isError, true);
+  assert.equal(value(await resumed.callTool({ name: 'list_boards', arguments: {} })).length, 1);
+  const nextCodeToken = randomBytes(32).toString('hex');
+  await query('UPDATE boards SET agent_hash = ? WHERE id = ?', [digest(nextCodeToken), secondId]);
+  assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: secondId } })).isError, true);
+  assert.equal((await resumed.callTool({ name: 'claim_board', arguments: { code: boardCode(secondToken) } })).isError, true);
+  value(await resumed.callTool({ name: 'claim_board', arguments: { code: boardCode(nextCodeToken) } }));
+  await query('UPDATE boards SET agent_enabled = 0 WHERE id = ?', [secondId]);
+  assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: secondId } })).isError, true);
+  await query('UPDATE boards SET agent_enabled = 1 WHERE id = ?', [secondId]);
+  const replacementKey = 'bloom_agent_' + randomBytes(32).toString('hex');
+  await query('UPDATE agent_connections SET token_hash = ? WHERE owner = ?', [digest(replacementKey), connectionOwner]);
+  await denied(null, connectionKey);
+  const refreshed = await connect(null, replacementKey);
+  assert.equal(value(await refreshed.callTool({ name: 'get_board', arguments: { boardId: secondId } })).revision, 1);
+  console.log('PASS: permanent connection, empty initial permissions, short-code claim, idempotence, reconnect persistence, two boards, writes, independent revocation, code replacement, pause and connection-key rotation.');
   console.log('PASS: deployed SDK discovery, graph read/edit, concurrent and stale revisions, JSON Canvas, missing screenshot, board scoping, pause, rotation, revocation, Origin rejection and human authentication gate.');
 } finally {
   await Promise.allSettled(clients.map(c => c.close()));
   if (created) {
+    await query('DELETE FROM agent_grants WHERE owner = ?', [connectionOwner]);
+    await query('DELETE FROM agent_connections WHERE owner = ?', [connectionOwner]);
+    await query('DELETE FROM changes WHERE board_id = ?', [secondId]);
+    await query('DELETE FROM boards WHERE id = ?', [secondId]);
     await query('DELETE FROM changes WHERE board_id = ?', [id]);
     await query('DELETE FROM members WHERE board_id = ?', [id]);
     await query('DELETE FROM boards WHERE id = ?', [id]);

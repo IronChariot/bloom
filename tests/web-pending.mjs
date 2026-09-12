@@ -4,10 +4,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { GraphStore, newGraph } from '../web/lib/graph.js';
+import { boardCode } from '../web/public/canvas/agent-code.js';
 
 // Exercise the real renderer and bridge against deliberately delayed responses.
-const graph = newGraph(); graph.nodes[0].text = 'Drag check';
+const graph = newGraph(); graph.title = 'A little room for big ideas'; graph.nodes[0].text = 'Drag check';
 const store = new GraphStore(graph), edits = [];
+let connectionConfigured = false;
+const testToken = 'ab'.repeat(32);
 const snapshot = () => ({ ...store.snapshot(), boardId: 'pending-test', dirty: false,
   members: [], role: 'owner', user: { id: 'test', name: 'Test' }, agentEnabled: true, recent: [] });
 const server = http.createServer(async (req, res) => {
@@ -18,6 +21,11 @@ const server = http.createServer(async (req, res) => {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
     if (url.pathname === '/api/me') return send({ userId: 'test', displayName: 'Test' });
     if (url.pathname === '/api/boards') return send({ boards: [{ id: 'pending-test', title: graph.title }] });
+    if (url.pathname === '/api/agent-connection') {
+      if (req.method === 'GET') return send({ configured: connectionConfigured });
+      connectionConfigured = true; return send({ token: 'bloom_agent_' + testToken });
+    }
+    if (url.pathname.endsWith('/agent')) return send({ token: testToken, enabled: true });
     if (url.pathname === '/api/boards/pending-test') return send(snapshot());
     if (url.pathname.endsWith('/sync')) return send({ revision: store.revision, members: [], agentEnabled: true,
       ...(body.revision !== store.revision ? { state: snapshot() } : {}) });
@@ -32,7 +40,7 @@ const server = http.createServer(async (req, res) => {
   if (!file.startsWith(path.resolve('web/public') + path.sep)) return res.writeHead(404).end();
   try {
     const data = await fs.readFile(file);
-    res.writeHead(200, { 'Content-Type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' }); res.end(data);
+    res.writeHead(200, { 'Content-Type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : file.endsWith('.svg') ? 'image/svg+xml' : 'text/html' }); res.end(data);
   } catch { res.writeHead(404).end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -89,6 +97,29 @@ try {
   await staysAt(authoritative);
   assert.deepEqual(errors, []);
   console.log('PASS: a rejected move reconciles to the verified server position and reports the conflict');
+
+  assert.equal(await frame.locator('#board-title').innerText(), graph.title);
+  for (const width of [1400, 1000, 760]) {
+    await page.setViewportSize({ width, height: 900 });
+    const [heading, left, right] = await Promise.all(['.board-heading', '.header-left', '.header-right'].map(selector => frame.locator(selector).boundingBox()));
+    assert.ok(Math.abs(heading.x + heading.width / 2 - width / 2) < 1, 'Board title should be centered');
+    assert.ok(heading.x >= left.x + left.width && heading.x + heading.width <= right.x, 'Header groups should not overlap');
+  }
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await frame.getByRole('button', { name: 'Agent session', exact: true }).click();
+  await frame.getByRole('button', { name: 'Copy board code', exact: true }).click();
+  await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).startsWith('bloom_'));
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), boardCode(testToken));
+  await frame.locator('.agent-setup summary').click();
+  await frame.getByRole('button', { name: 'Copy one-time Hermes setup', exact: true }).click();
+  await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('mcp_servers:'));
+  const setup = await page.evaluate(() => navigator.clipboard.readText());
+  assert.match(setup, /bloom_agent_/); assert.ok(!setup.includes('?board='));
+  await fs.mkdir('artifacts', { recursive: true });
+  await page.screenshot({ path: 'artifacts/bloom-header-and-agent-setup.png' });
+  assert.deepEqual(errors, []);
+  console.log('PASS: centered responsive board title, copyable board code and board-independent one-time setup');
 } finally {
   await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }

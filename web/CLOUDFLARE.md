@@ -6,7 +6,7 @@ Both Workers and D1 are deployed in account `176f6319b68a88de047649d365cd1a61`. 
 
 - Human app: `https://bloom.theothersam.workers.dev`. Cloudflare Access is configured and redirects visitors to email-code sign-in. No board data or static assets are served before authentication.
 - MCP: `https://bloom-mcp.theothersam.workers.dev/mcp?board=BOARD_ID`. Live, protected by board-scoped bearer tokens.
-- D1: `bloom`, ID `8f8c4b7f-dbbd-4825-a0cf-c542aeab5ca4`, WEUR. Both migrations applied.
+- D1: `bloom`, ID `8f8c4b7f-dbbd-4825-a0cf-c542aeab5ca4`, WEUR. Migrations through `0002_brief_veda.sql` applied, including persistent agent connections and board grants.
 - Imported board: `900b678e-3fbd-4f1c-a717-77a63c7d8f47`, 15 ideas and 14 connections, owned by `email:theothersam@gmail.com`. Imported from the local desktop backup; the visible old Site's node IDs and text were checked against it. Remote MCP readback confirmed the counts and revision 0.
 
 The old private Site remains running as a fallback. It is a separate database, with no ongoing replication. Further changes there must be exported/imported before treating Cloudflare as the current board.
@@ -33,6 +33,7 @@ npx wrangler login
 npm run cf:build
 npm run cf:test
 npx wrangler d1 migrations apply bloom --remote --config cloudflare/browser.jsonc
+node scripts/ensure-agent-code-key.mjs
 npm run cf:deploy:agent
 npm run cf:deploy:browser
 node scripts/smoke-cloudflare.mjs
@@ -42,15 +43,17 @@ The configs contain existing account/database IDs; do not create another databas
 
 ## Hermes handoff
 
-Local ignored files `artifacts/hermes/bloom-hermes.yaml` and `artifacts/hermes/bloom-hermes.env` contain the exact connection configuration and secret respectively. Merge their contents into the active Hermes gateway profile's config and environment on the other machine; do not overwrite existing configuration. Restart the gateway. See [agent connection instructions](AGENT_CONNECTION.md).
+Use **Agent session → One-time agent setup → Copy one-time Hermes setup** for the permanent `/mcp` connection. Add that configuration to the active Hermes gateway profile and restart once. Then share codes from **Copy board code** privately with the agent. Bloom remembers redeemed grants across reconnects. The earlier `artifacts/hermes/bloom-hermes.yaml` / `.env` files are legacy board-specific settings, not the new setup. See [agent connection instructions](AGENT_CONNECTION.md).
 
-The token grants editing access to the imported Cloudflare board. It is stored only as a hash in D1. The owner can pause, rotate or revoke it in Agent session after human login works. Creating a token from a browser that has no cached token also replaces the previous token. Structured graph operations work with no browser open; fresh PNGs require a visible signed-in browser.
+Connection keys grant no board permissions by themselves. Board codes authorize persistent grants to individual boards. Code rotation/revocation invalidates those grants; connection-key rotation preserves them while disconnecting the old client key. The browser Worker stores a separate encryption secret to support repeated owner copies without changing a code. `ensure-agent-code-key.mjs` preserves an existing remote secret; the private recovery copy is in ignored `artifacts/hermes/cloudflare-agent-code-key.env`. Back it up separately from D1 and never rotate it casually: existing encrypted code copies depend on it. Structured graph operations work with no browser open; fresh PNGs require a visible signed-in browser.
 
 ## Verification and remaining checks
 
 Passed: both Worker builds, 10 core tests, 2 Access/identity tests, live MCP SDK initialization and tool discovery, graph reads/edits, JSON Canvas resource, missing-image guidance, stale and concurrent edit conflicts, invalid tokens, cross-board denial, pause, replacement, revocation, Origin checks, and the human app's closed authentication gate. The live tests used a disposable board and removed it afterward. The imported board was only read during verification.
 
 Verified on 2026-09-12 through Chrome: real owner email-code login, imported board rendering, a human edit read by the remote MCP SDK, an agent-created node appearing through browser sync, and a fresh revision-matched PNG returned by MCP. The temporary integration board was removed and the original board left open. The owner-only Access gate and MCP token checks also passed a repeat live smoke test.
+
+The permanent-connection flow passed live tests for empty initial permissions, code claims, idempotent redemption, reconnect persistence, two independently granted boards, writes, per-board revocation, code replacement, pause and connection-key rotation. Chrome verified that owner code copies survive reloads and do not resume a paused board. The local UI suite covers the centered header at three viewport widths and the copy controls. All temporary boards and connections were removed.
 
 The Cloudflare dashboard's MCP CPU chart showed P50 4.25 ms, P90 13.02 ms and P99 16.72 ms over its last-24-hours sample; the Worker overview reported 25 invocations and zero errors. These are limited samples across deployed versions, not proof that every workload stays within the Free plan CPU allowance. Larger boards and sustained usage still need measurement. The telemetry API remains unavailable to the Wrangler credential (403), but dashboard metrics are accessible. History, polling and image budgets are described in README.md.
 
