@@ -136,9 +136,9 @@ try {
   console.log('PASS: centered responsive board title, copyable board code and board-independent one-time setup');
   await frame.getByRole('button', { name: 'Agent session', exact: true }).click();
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  const labels = ['Automatic placement', 'Explore new possibilities together', 'ArchitectureAndCollaboration', 'Wide WWW labels remain readable'];
-  store.apply(labels.map((text, i) => ({ type: 'addNode', id: `leaf-${i}`, text, depth: 2 + i * 2,
-    x: (i % 2 ? 320 : -320), y: (i < 2 ? -180 : 180) })), 'Agent', store.revision);
+  const labels = ['Automatic placement', 'Explore new possibilities together', 'ArchitectureAndCollaboration', 'Wide WWW labels remain readable', 'Hallucinations?'];
+  store.apply(labels.map((text, i) => ({ type: 'addNode', id: `leaf-${i}`, text, depth: i === 4 ? 2 : 2 + i * 2,
+    x: i === 4 ? 0 : (i % 2 ? 320 : -320), y: i === 4 ? -280 : (i < 2 ? -180 : 180) })), 'Agent', store.revision);
   await frame.locator('[data-node="leaf-3"]').waitFor();
   await frame.getByRole('button', { name: 'Fit board to view', exact: true }).click();
   for (let i = 0; i < labels.length; i++) {
@@ -150,6 +150,7 @@ try {
     assert.equal(rendered.lines.join('').replace(/\s/g, ''), labels[i].replace(/\s/g, ''));
     assert.ok(rendered.fits, `Leaf ${i} text exceeds its bubble`); assert.ok(rendered.font >= 8);
   }
+  assert.deepEqual(await frame.locator('[data-node="leaf-4"] tspan').allTextContents(), ['Hallucinations?']);
   assert.equal(edits.length, 4, 'Rendering and layout animation must not submit background edits');
   await page.screenshot({ path: 'artifacts/bloom-deep-labels.png' });
   assert.deepEqual(errors, []);
