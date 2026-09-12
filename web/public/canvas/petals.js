@@ -1,8 +1,10 @@
+import { petalGeometry, roundedPetalPath } from './petal-geometry.js';
 import { arrangePetals } from './petal-model.js';
 
 const emojis = ['😀','😃','😊','😍','🥰','😎','🤔','🧐','😮','😂','🥳','😴','😬','😢','😡','🤯','👍','👎','❤️','⭐','🔥','💡','🎯','✅','❓','⚠️','🚀','🌱','🎉','💪','👀','🙏'];
 const commentIcon = '<path d="M-7-5h14v9H0l-4 4V4h-3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>';
 const mix = (color, amount) => '#' + [1,3,5].map(i => { const c = parseInt(color.slice(i,i+2),16); return Math.round(c + ((amount < 0 ? 0 : 255)-c)*Math.abs(amount)).toString(16).padStart(2,'0'); }).join('');
+const ownerId = el => { const owner = el.closest('[data-node], [data-petal-node]'); return owner?.dataset.node || owner?.dataset.petalNode; };
 const angleFor = slot => -Math.PI / 4 + slot * Math.PI / 4;
 const distance = (a,b) => Math.atan2(Math.sin(a-b),Math.cos(a-b));
 
@@ -35,7 +37,7 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
     if(color) { button.style.background=color; button.classList.add('petal-color-choice'); }
     button.textContent=content;
     if(label==='Comment petal')button.innerHTML=`<svg viewBox="-12 -12 24 24">${commentIcon}</svg>`;
-    if(label==='Blank petal')button.innerHTML='<svg viewBox="-20 -20 40 40"><path d="M-17 0C-9-13 20-19 20 0C20 19-9 13-17 0Z" fill="white"/></svg>';
+    if(label==='Blank petal')button.innerHTML='<svg viewBox="-20 -20 40 40"><ellipse rx="17" ry="16" fill="white"/></svg>';
     button.addEventListener('click',action); menu.append(button); return button;
   }
   function back() { radialButton('Back','‹',0,0,choices); }
@@ -94,14 +96,14 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
     tooltip.style.top=`${Math.max(84,Math.min(innerHeight-bounds.height-8,box.top))}px`;
   }
   board.addEventListener('contextmenu',e=> {
-    const node=e.target.closest('[data-node]'); if(!node)return;
-    e.preventDefault();e.stopPropagation();open(node.dataset.node,e.clientX,e.clientY,e.target.closest('[data-petal]')?.dataset.petal);
+    const nodeId=ownerId(e.target); if(!nodeId)return;
+    e.preventDefault();e.stopPropagation();open(nodeId,e.clientX,e.clientY,e.target.closest('[data-petal]')?.dataset.petal);
   });
   board.addEventListener('dblclick',e=> {if(e.target.closest('[data-petal]')){e.stopImmediatePropagation();e.preventDefault();}},true);
   board.addEventListener('pointerdown',e=> {
     const element=e.target.closest('[data-petal]');if(!element||e.button!==0)return;
     e.stopImmediatePropagation();e.preventDefault();close();
-    const nodeId=element.closest('[data-node]').dataset.node,id=element.dataset.petal,petal=petalById(nodeId,id);
+    const nodeId=ownerId(element),id=element.dataset.petal,petal=petalById(nodeId,id);
     dragging={nodeId,id,x:e.clientX,y:e.clientY,moved:false,slot:petal.slot,angle:angleFor(petal.slot)};
     board.setPointerCapture(e.pointerId);
   },true);
@@ -122,11 +124,11 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
     pending={nodeId:d.nodeId,petals:d.petals}; const own=pending;
     apply([{type:'movePetal',nodeId:d.nodeId,id:d.id,slot:d.slot}]).finally(()=>{if(pending===own)pending=null;});
   },true);
-  board.addEventListener('pointerover',e=> {const el=e.target.closest('[data-petal]');if(el&&!el.contains(e.relatedTarget))showTip(el.closest('[data-node]').dataset.node,el.dataset.petal,el);});
+  board.addEventListener('pointerover',e=> {const el=e.target.closest('[data-petal]');if(el&&!el.contains(e.relatedTarget))showTip(ownerId(el),el.dataset.petal,el);});
   board.addEventListener('pointerout',e=> {const el=e.target.closest('[data-petal]');if(el&&!el.contains(e.relatedTarget)&&!tooltip?.contains(e.relatedTarget))hideTip();});
-  board.addEventListener('focusin',e=> {const el=e.target.closest('[data-petal]');if(el)showTip(el.closest('[data-node]').dataset.node,el.dataset.petal,el);});
+  board.addEventListener('focusin',e=> {const el=e.target.closest('[data-petal]');if(el)showTip(ownerId(el),el.dataset.petal,el);});
   board.addEventListener('focusout',hideTip);
-  board.addEventListener('keydown',e=> {const el=e.target.closest('[data-petal]');if(el&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const b=el.getBoundingClientRect();open(el.closest('[data-node]').dataset.node,b.x+b.width/2,b.y+b.height/2,el.dataset.petal);}},true);
+  board.addEventListener('keydown',e=> {const el=e.target.closest('[data-petal]');if(el&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const b=el.getBoundingClientRect();open(ownerId(el),b.x+b.width/2,b.y+b.height/2,el.dataset.petal);}},true);
   document.addEventListener('pointerdown',e=>{if(menu&&!menu.contains(e.target))close();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'){close();dragging=null;}});
   window.addEventListener('blur',()=>{close();dragging=null;});
@@ -134,7 +136,7 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
   window.addEventListener('resize',close);
   return {
     render(node) {
-      return (node.petals||[]).map(p=>`<g class="petal" data-petal="${esc(p.id)}" tabindex="0" role="button" aria-label="${esc(p.kind==='comment'?'Comment petal':p.kind==='emoji'?`Emoticon petal ${p.emoji}`:'Colour petal')}"><path class="petal-shape" d="M-17 0C-9-13 20-19 20 0C20 19-9 13-17 0Z" fill="${p.color}"/>${p.kind==='emoji'?`<text class="petal-emoji" x="2" y="5">${esc(p.emoji)}</text>`:p.kind==='comment'?`<g class="petal-comment-icon">${commentIcon}</g>`:''}</g>`).join('');
+      return (node.petals||[]).map(p=>`<g class="petal" data-petal="${esc(p.id)}" tabindex="0" role="button" aria-label="${esc(p.kind==='comment'?'Comment petal':p.kind==='emoji'?`Emoticon petal ${p.emoji}`:'Colour petal')}"><path class="petal-shape" d="${roundedPetalPath}" vector-effect="non-scaling-stroke" fill="${p.color}"/><g class="petal-content">${p.kind==='emoji'?`<text class="petal-emoji" text-anchor="middle" dominant-baseline="central">${esc(p.emoji)}</text>`:p.kind==='comment'?`<g class="petal-comment-icon">${commentIcon}</g>`:''}</g></g>`).join('');
     },
     reconcile() {
       const key=getState()?.boardId||getState()?.graph?.nodes[0]?.id;
@@ -154,9 +156,13 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
         const m=motion.get(key),held=dragging?.nodeId===node.id&&dragging.id===petal.id&&dragging.moved;
         m.angle=held?dragging.angle:reduced?target:m.angle+distance(target,m.angle)*(1-Math.exp(-dt*.2));
         m.scale=reduced?1:m.scale+(1-m.scale)*(1-Math.exp(-dt*.22));
-        const extent=1/Math.sqrt((Math.cos(m.angle)/(r.rx+18))**2+(Math.sin(m.angle)/(r.ry+18))**2);
-        el.setAttribute('transform',`translate(${Math.cos(m.angle)*extent},${Math.sin(m.angle)*extent}) scale(${m.scale})`);
-        el.querySelector('.petal-shape').setAttribute('transform',`rotate(${m.angle*180/Math.PI})`);
+        const g=petalGeometry(r.rx,r.ry,m.angle);
+        el.setAttribute('transform',`translate(${g.x},${g.y}) scale(${m.scale})`);
+        el.querySelector('.petal-shape').setAttribute('transform',`rotate(${m.angle*180/Math.PI}) scale(${g.radial},${g.tangent})`);
+        el.querySelector('.petal-content').setAttribute('transform',`translate(${Math.cos(m.angle)*g.iconOffset},${Math.sin(m.angle)*g.iconOffset})`);
+        const emoji=el.querySelector('.petal-emoji'), comment=el.querySelector('.petal-comment-icon');
+        if(emoji)emoji.style.fontSize=`${g.iconSize}px`;
+        if(comment)comment.setAttribute('transform',`scale(${g.iconSize/16})`);
         el.classList.toggle('petal-dragging',!!held);
       }
     }

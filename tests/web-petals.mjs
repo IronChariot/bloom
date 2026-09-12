@@ -46,11 +46,42 @@ try{
   assert.ok(store.graph.edges.every(e=>e.pattern==='dotted'&&e.type==='both'));
   await frame.getByRole('button',{name:'Undo',exact:true}).click();await saved();assert.ok(store.graph.edges.every(e=>e.pattern==='dotted'&&e.type==='arrow'));
   console.log('PASS: Ctrl multi-selection by type, independent style highlights and single-step bulk undo');
+  const outlineChecks=await frame.locator('body').evaluate(async()=>{
+    const {blobOutline,outlineDistance}=await import('/canvas/outline.js');
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+    document.querySelector('#canvas').append(path);path.style.visibility='hidden';
+    let checks=0;
+    for(const scale of [.28,.8,1]) for(const shape of [null,{xx:.3,xy:.15,lagX:16,lagY:-10},{xx:-.2,xy:-.2,lagX:-12,lagY:18}]) {
+      const outline=blobOutline(155*scale,90*scale,1.37,1.8,2,0,shape,{x:.6,y:-.8});path.setAttribute('d',outline.path);
+      for(let i=0;i<72;i++) {
+        const angle=i*Math.PI/36,dx=Math.cos(angle),dy=Math.sin(angle),r=outlineDistance(outline.segments,dx,dy);
+        if(!path.isPointInFill(new DOMPoint(dx*(r-.1),dy*(r-.1))) || path.isPointInFill(new DOMPoint(dx*(r+.1),dy*(r+.1))))throw Error(`Incorrect outline intersection at angle ${angle}`);
+        checks++;
+      }
+    }
+    path.remove();return checks;
+  });
+  assert.equal(outlineChecks,648);
+  for(const e of store.graph.edges) {
+    const attachments=await frame.locator(`[data-edge="${e.id}"] .edge`).evaluate((path,e)=> {
+      const result=[];
+      for(const [id,at] of [[e.source,0],[e.target,path.getTotalLength()]]) {
+        const blob=document.querySelector(`[data-node="${id}"] .bubble-shape`),end=path.getPointAtLength(at);
+        const local=new DOMPoint(end.x,end.y).matrixTransform(path.getCTM()).matrixTransform(blob.getCTM().inverse());
+        const r=Math.hypot(local.x,local.y);
+        result.push(!blob.isPointInFill(local) && blob.isPointInFill(new DOMPoint(local.x*(r-3)/r,local.y*(r-3)/r)));
+      }
+      return result;
+    },e);
+    assert.deepEqual(attachments,[true,true]);
+  }
+  console.log('PASS: arrow endpoints meet rendered outlines; 648 intersections across directions, growth, wobble and drag deformation');
+
   async function right(){await clickNode(root,{button:'right'});await frame.getByRole('dialog',{name:'Add petal',exact:true}).waitFor();}
   await right();await frame.getByRole('button',{name:'Blank petal',exact:true}).click();
   assert.equal(await frame.locator('.petal-color-choice').count(),24);
   await page.screenshot({path:'artifacts/bloom-petal-colours.png',animations:'disabled'});
-  await frame.locator('.petal-color-choice').first().click();await saved();await node(root).locator('[data-petal]').waitFor();
+  await frame.locator('.petal-color-choice').first().click();await saved();await frame.locator(`[data-petal-node="${root}"] [data-petal]`).waitFor();
   assert.equal(store.graph.nodes[0].petals[0].slot,0);
   await right();await frame.getByRole('button',{name:'Emoticon petal',exact:true}).click();
   assert.equal(await frame.locator('.petal-choice[aria-label^="Emoticon "]').count(),32);
@@ -61,27 +92,35 @@ try{
   assert.equal(await frame.getByRole('button',{name:'Confirm comment',exact:true}).isDisabled(),true);
   await input.fill('First line');await page.keyboard.press('Shift+Enter');await page.keyboard.type('Second line');await page.keyboard.press('Enter');await saved();
   const comment=store.graph.nodes[0].petals[2];assert.equal(comment.comment,'First line\nSecond line');assert.equal(comment.author,'tester@example.com');
-  const petal=id=>node(root).locator(`[data-petal="${id}"]`);
-  await petal(comment.id).hover();await frame.getByRole('tooltip').waitFor();
+  const petal=id=>frame.locator(`[data-petal-node="${root}"] [data-petal="${id}"]`);
+  // The inner halves sit behind the blob: interact at the exposed icon position.
+  async function petalPoint(id) {
+    await wait(async()=>Number((await petal(id).getAttribute('transform'))?.match(/scale\(([^)]+)\)/)?.[1]||0)>.999);
+    const p=await petal(id).locator('.petal-content').evaluate(el=>{const p=new DOMPoint(0,0).matrixTransform(el.getScreenCTM());return{x:p.x,y:p.y};});
+    const iframe=await page.locator('iframe').boundingBox();return{x:p.x+iframe.x,y:p.y+iframe.y};
+  }
+  async function clickPetal(id) {const p=await petalPoint(id);await page.mouse.click(p.x,p.y);}
+  async function hoverPetal(id) {const p=await petalPoint(id);await page.mouse.move(p.x,p.y);}
+  await hoverPetal(comment.id);await frame.getByRole('tooltip').waitFor();
   assert.match(await frame.getByRole('tooltip').innerText(),/tester@example.com/);assert.match(await frame.getByRole('tooltip').innerText(),/Second line/);
-  await petal(comment.id).click();await frame.getByRole('button',{name:'Edit comment',exact:true}).click();await input.fill('Updated note');await frame.getByRole('button',{name:'Confirm comment',exact:true}).click();await saved();
+  await clickPetal(comment.id);await frame.getByRole('button',{name:'Edit comment',exact:true}).click();await input.fill('Updated note');await frame.getByRole('button',{name:'Confirm comment',exact:true}).click();await saved();
   assert.equal(store.graph.nodes[0].petals[2].comment,'Updated note');
-  await petal(comment.id).click();assert.equal(await frame.getByRole('button',{name:'Choose emoticon',exact:true}).count(),0);await page.keyboard.press('Escape');
+  await clickPetal(comment.id);assert.equal(await frame.getByRole('button',{name:'Choose emoticon',exact:true}).count(),0);await page.keyboard.press('Escape');
   const plain=store.graph.nodes[0].petals[0],emoji=store.graph.nodes[0].petals[1];
-  await petal(emoji.id).click();assert.equal(await frame.getByRole('button',{name:'Add comment',exact:true}).count(),0);await frame.getByRole('button',{name:'Change petal colour',exact:true}).click();await frame.locator('.petal-color-choice').last().click();await saved();assert.notEqual(store.graph.nodes[0].petals[1].color,'#ffffff');
+  await clickPetal(emoji.id);assert.equal(await frame.getByRole('button',{name:'Add comment',exact:true}).count(),0);await frame.getByRole('button',{name:'Change petal colour',exact:true}).click();await frame.locator('.petal-color-choice').last().click();await saved();assert.notEqual(store.graph.nodes[0].petals[1].color,'#ffffff');
   // Drag the first petal onto the next one; observe the neighbour moving before release.
-  const a=await petal(plain.id).boundingBox(),b=await petal(emoji.id).boundingBox();
+  const a=await petalPoint(plain.id),b=await petalPoint(emoji.id);
   const oldTransform=await petal(emoji.id).getAttribute('transform');
-  await page.mouse.move(a.x+a.width/2,a.y+a.height/2);await page.mouse.down();await page.mouse.move(b.x+b.width/2,b.y+b.height/2,{steps:10});
+  await page.mouse.move(a.x,a.y);await page.mouse.down();await page.mouse.move(b.x,b.y,{steps:10});
   await wait(async()=>await petal(emoji.id).getAttribute('transform')!==oldTransform);await page.screenshot({path:'artifacts/bloom-petals-drag.png'});await page.mouse.up();await saved();
   assert.equal(store.graph.nodes[0].petals.find(p=>p.id===plain.id).slot,1);assert.equal(new Set(store.graph.nodes[0].petals.map(p=>p.slot)).size,3);
-  await petal(plain.id).click();await frame.getByRole('button',{name:'Delete petal',exact:true}).click();await saved();assert.equal(store.graph.nodes[0].petals.length,2);
+  await clickPetal(plain.id);await frame.getByRole('button',{name:'Delete petal',exact:true}).click();await saved();assert.equal(store.graph.nodes[0].petals.length,2);
   await frame.getByRole('button',{name:'Undo',exact:true}).click();await saved();assert.equal(store.graph.nodes[0].petals.length,3);
   for(let i=0;i<5;i++)store.apply([{type:'addPetal',nodeId:root,kind:'color',color:'#8675ef'}]);
-  await wait(async()=>await node(root).locator('[data-petal]').count()===8);
+  await wait(async()=>await frame.locator(`[data-petal-node="${root}"] [data-petal]`).count()===8);
   await clickNode(root,{button:'right'});assert.equal(await frame.getByRole('dialog',{name:'Add petal',exact:true}).count(),0);assert.match(await frame.locator('#toast').innerText(),/eight petals/);
-  await wait(async()=>await node(root).locator('[data-petal]').evaluateAll(els=>els.every(el=>Number(el.getAttribute('transform')?.match(/scale\(([^)]+)\)/)?.[1]||0)>.999)));
+  await wait(async()=>await frame.locator(`[data-petal-node="${root}"] [data-petal]`).evaluateAll(els=>els.every(el=>Number(el.getAttribute('transform')?.match(/scale\(([^)]+)\)/)?.[1]||0)>.999)));
   await page.screenshot({path:'artifacts/bloom-petals.png'});
-  await page.reload();await node(root).waitFor();assert.equal(await node(root).locator('[data-petal]').count(),8);
+  await page.reload();await node(root).waitFor();assert.equal(await frame.locator(`[data-petal-node="${root}"] [data-petal]`).count(),8);
   assert.deepEqual(errors,[]);console.log('PASS: radial colour/emoticon menus, comments and attribution, conversion rules, animated occupied-slot drag, delete/undo, eight-petal limit and reload persistence');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

@@ -1,7 +1,8 @@
+import { blobOutline, outlineDistance } from './outline.js';
 import { createPetals } from './petals.js';
 import { colorShades } from './color-shades.js';
 import { labelLayout } from './label-layout.js';
-import { createDeformation, stepDeformation, deformPoint } from './deformation.js';
+import { createDeformation, stepDeformation } from './deformation.js';
 import { boardKey, withPendingEdits } from './pending-edits.js';
 const api = window.bloom;
 const icons = {
@@ -13,12 +14,12 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 const colors = ['#ffffff', '#8675ef', '#f3af47', '#4bbda0', '#ed7d9c', '#64a7e5'];
 document.querySelector('#app').innerHTML = `
  <header class="topbar"><div class="header-left"><div class="brand"><img src="assets/icon.svg" alt="">bloom</div><div class="divider"></div><button class="file-button" id="file-toggle" title="File menu" aria-label="File menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><span id="save-status" class="save-status">Recovered locally</span></div><div class="board-heading"><span class="board-heading-label">Current Board:</span><span id="board-title" class="board-title"></span></div><div class="header-right"><button class="file-button" data-command="save" title="Download board · Ctrl S" aria-label="Download board">${icon('save')}</button><div class="divider"></div><button class="share-button" id="session-toggle">${icon('agent')}<span class="session-label">Agent session</span><span class="session-indicator"></span></button></div></header>
- <main class="board" id="board" aria-label="Brainstorm whiteboard"><svg id="canvas" role="application" aria-label="Interactive brainstorm canvas" tabindex="0"><defs><filter id="bubble-shadow" x="-35%" y="-35%" width="170%" height="180%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#59647f" flood-opacity=".07"/></filter><marker id="arrow-end" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="m2 2 6 3-6 3" fill="none" stroke="#aeb5c5" stroke-width="1.4"/></marker></defs><g id="world"><g id="edges"></g><g id="nodes"></g></g></svg></main>
+ <main class="board" id="board" aria-label="Brainstorm whiteboard"><svg id="canvas" role="application" aria-label="Interactive brainstorm canvas" tabindex="0"><defs><filter id="bubble-shadow" x="-35%" y="-35%" width="170%" height="180%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#59647f" flood-opacity=".07"/></filter><marker id="arrow-end" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="m2 2 6 3-6 3" fill="none" stroke="#aeb5c5" stroke-width="1.4"/></marker></defs><g id="world"><g id="petals"></g><g id="edges"></g><g id="nodes"></g></g></svg></main>
  <nav class="toolbar" aria-label="Whiteboard tools"><button class="tool active" data-tool="select" title="Select · V" aria-label="Select tool">${icon('pointer')}</button><button class="tool" data-tool="add" title="Add idea · N" aria-label="Add idea tool">${icon('plus')}</button><button class="tool" data-tool="hand" title="Pan · H or hold Space" aria-label="Pan tool">${icon('hand')}</button><div class="tool-separator"></div><button class="tool" data-command="undo" title="Undo · Ctrl Z" aria-label="Undo">${icon('undo')}</button><button class="tool" data-command="redo" title="Redo · Ctrl Shift Z" aria-label="Redo">${icon('redo')}</button><div class="tool-separator"></div><button class="tool" id="tidy" title="Give overlapping ideas some room" aria-label="Space out ideas">${icon('spark')}</button></nav>
  <div class="bottom-left"><button class="help-button" id="help-toggle" title="How to use Bloom" aria-label="Help">?</button></div><div class="bottom-hint"><b>Double-click</b> to grow an idea <span style="padding:0 12px;color:#ccd0d8">/</span> drag the canvas to wander</div><div class="zoom-bar"><button id="zoom-out" aria-label="Zoom out">${icon('minus')}</button><button class="zoom-value" id="zoom-value" title="Reset zoom">100%</button><button id="zoom-in" aria-label="Zoom in">${icon('plus')}</button><div class="zoom-sep"></div><button id="fit" aria-label="Fit board to view" title="Fit board · F">${icon('fit')}</button></div>
  <div class="selection-actions hidden" id="selection-actions"></div><div id="panels"></div><div id="toast" class="toast hidden" role="status"></div><div id="connector-picker" class="connector-picker hidden"></div><div id="empty" class="empty hidden"></div>`;
 
-const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), edgesLayer = document.querySelector('#edges'), panels = document.querySelector('#panels');
+const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), petalsLayer = document.querySelector('#petals'), edgesLayer = document.querySelector('#edges'), panels = document.querySelector('#panels');
 let state, selected = new Set(), selectedEdges = new Set(), tool = 'select', view = { x: innerWidth / 2, y: (innerHeight - 76) / 2 - 25, zoom: 1 }, physical = new Map(), drag = null, pan = null, space = false, editor = null, editTimer, toastTimer, openPanel = null, busy = Promise.resolve(), clipboardCache = null, activeTarget = null, chosenStyle = null, sessionInfo = null, first = true, lastNodeClick = null, consumedDoubleClick = 0;
 let shadeHold = null, shadeMenu = null, suppressedColor = null, suppressedUntil = 0;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -87,16 +88,16 @@ function update(next) {
   if (openPanel === 'session') renderSession();
 }
 function renderGraph() {
-  if (!state.graph) { nodesLayer.innerHTML = ''; edgesLayer.innerHTML = ''; return; }
+  if (!state.graph) { nodesLayer.innerHTML = ''; edgesLayer.innerHTML = ''; petalsLayer.innerHTML = ''; return; }
   nodesLayer.innerHTML = state.graph.nodes.map(n => {
     const r = radius(n), { font, lines } = label(n), p = physical.get(n.id);
-    return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text>${petalUI.render(n)}</g>`;
+    return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
   }).join('');
+  petalsLayer.innerHTML = state.graph.nodes.map(n => `<g data-petal-node="${esc(n.id)}">${petalUI.render(n)}</g>`).join('');
   edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
 }
 function blob(rx, ry, t, wobble, seed, extra = 0, shape = null, grab = null) {
-  const points = Array.from({ length: 24 }, (_, i) => { const a = i / 24 * Math.PI * 2; const wave = 1 + Math.sin(a * 3 + seed) * .014 + Math.sin(a * 4 + t * 13) * wobble * .035; const x = Math.cos(a) * (rx + extra) * wave, y = Math.sin(a) * (ry + extra) * wave; return shape ? deformPoint(x, y, rx + extra, ry + extra, shape, grab) : { x, y }; });
-  let d = ''; for (let i = 0; i < points.length; i++) { const p = points[i], q = points[(i + 1) % points.length]; if (!i) { const prev = points[points.length - 1]; d = `M${(prev.x + p.x) / 2},${(prev.y + p.y) / 2}`; } d += ` Q${p.x},${p.y} ${(p.x + q.x) / 2},${(p.y + q.y) / 2}`; } return d + ' Z';
+  return blobOutline(rx, ry, t, wobble, seed, extra, shape, grab).path;
 }
 let lastFrame = performance.now();
 function frame(now) {
@@ -120,14 +121,17 @@ function frame(now) {
       }
       if (reduced) p.shape = createDeformation(p.x, p.y); else stepDeformation(p.shape, p.x, p.y, dt / 60, contact);
       const grab = drag?.id === n.id ? drag.grab : null;
-      el.setAttribute('transform', `translate(${p.x},${p.y})`); el.querySelector('.bubble-shape').setAttribute('d', blob(r.rx, r.ry, now / 1000, reduced ? 0 : p.wobble, p.seed, 0, p.shape, grab)); el.querySelector('.selection-ring').setAttribute('d', blob(r.rx, r.ry, now / 1000, reduced ? 0 : p.wobble, p.seed, 7, p.shape, grab));
-      petalUI.frame(n, el, dt);
+      const outline = blobOutline(r.rx, r.ry, now / 1000, reduced ? 0 : p.wobble, p.seed, 0, p.shape, grab);
+      p.outline = outline.segments;
+      el.setAttribute('transform', `translate(${p.x},${p.y})`); el.querySelector('.bubble-shape').setAttribute('d', outline.path); el.querySelector('.selection-ring').setAttribute('d', blob(r.rx, r.ry, now / 1000, reduced ? 0 : p.wobble, p.seed, 7, p.shape, grab));
+      const petals = petalsLayer.querySelector(`[data-petal-node="${CSS.escape(n.id)}"]`);
+      if (petals) { petals.setAttribute('transform', `translate(${p.x},${p.y})`); petalUI.frame(n, petals, dt); }
     }
     for (const e of state.graph.edges) {
       const a = physical.get(e.source), b = physical.get(e.target); if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y, angle = Math.atan2(dy, dx); const ar = radius(nodeById(e.source)), br = radius(nodeById(e.target));
-      const border = r => 1 / Math.sqrt((Math.cos(angle) / r.rx) ** 2 + (Math.sin(angle) / r.ry) ** 2);
-      const l1 = border(ar) * .94, l2 = border(br) * .98;
+      const dx = b.x - a.x, dy = b.y - a.y, angle = Math.atan2(dy, dx);
+      // Attach to the actual animated outline, with room for the arrow's stroke.
+      const l1 = outlineDistance(a.outline, dx, dy) + 1.5, l2 = outlineDistance(b.outline, -dx, -dy) + 1.5;
       const x1 = a.x + Math.cos(angle) * l1, y1 = a.y + Math.sin(angle) * l1, x2 = b.x - Math.cos(angle) * l2, y2 = b.y - Math.sin(angle) * l2;
       const el = edgesLayer.querySelector(`[data-edge="${CSS.escape(e.id)}"]`); if (el) for (const path of el.querySelectorAll('path')) path.setAttribute('d', `M${x1},${y1} C${x1 + dx * .24},${y1 + dy * .12} ${x2 - dx * .24},${y2 - dy * .12} ${x2},${y2}`);
     }
