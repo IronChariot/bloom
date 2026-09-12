@@ -1,3 +1,4 @@
+import { colorShades } from './color-shades.js';
 import { labelLayout } from './label-layout.js';
 import { createDeformation, stepDeformation, deformPoint } from './deformation.js';
 import { boardKey, withPendingEdits } from './pending-edits.js';
@@ -5,6 +6,7 @@ const api = window.bloom;
 const icons = {
  pointer: '<path d="m5 3 14 9-7 1-3 7z"/>', plus: '<path d="M12 5v14M5 12h14"/>', hand: '<path d="M8 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v7-4a2 2 0 0 1 4 0v9c0 5-4 7-7 7s-5-2-7-5l-3-4a2 2 0 0 1 3-2l2 2"/>', undo: '<path d="m8 5-5 5 5 5M3 10h11a6 6 0 0 1 0 12" transform="translate(0 -2)"/>', redo: '<path d="m16 5 5 5-5 5M21 10H10a6 6 0 0 0 0 12" transform="translate(0 -2)"/>', trash: '<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>', copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>', minus: '<path d="M5 12h14"/>', fit: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>', chevron: '<path d="m8 10 4 4 4-4"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', agent: '<rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M9 17h6M1 11v5M23 11v5"/>', arrow: '<path d="M3 12h17m-5-5 5 5-5 5"/>', both: '<path d="M3 12h18M8 7l-5 5 5 5m8-10 5 5-5 5"/>', line: '<path d="M3 12h18"/>', dotted: '<path d="M3 12h18" stroke-dasharray="2 4"/>', save: '<path d="M4 3h14l3 3v15H3V3h1M7 3v6h10V3M7 21v-8h10v8"/>', folder: '<path d="M3 20V5h7l2 3h9v12z"/>', spark: '<path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/>'
 };
+icons.reverse = '<path d="M21 12H4m5-5-5 5 5 5"/>';
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.plus}</svg>`;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const colors = ['#ffffff', '#8675ef', '#f3af47', '#4bbda0', '#ed7d9c', '#64a7e5'];
@@ -17,6 +19,7 @@ document.querySelector('#app').innerHTML = `
 
 const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), edgesLayer = document.querySelector('#edges'), panels = document.querySelector('#panels');
 let state, selected = new Set(), selectedEdge = null, tool = 'select', view = { x: innerWidth / 2, y: (innerHeight - 76) / 2 - 25, zoom: 1 }, physical = new Map(), drag = null, pan = null, space = false, editor = null, editTimer, toastTimer, openPanel = null, busy = Promise.resolve(), clipboardCache = null, activeTarget = null, chosenStyle = null, sessionInfo = null, first = true, lastNodeClick = null, consumedDoubleClick = 0;
+let shadeHold = null, shadeMenu = null, suppressedColor = null, suppressedUntil = 0;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let confirmedState;
 const pendingEdits = [];
@@ -87,7 +90,7 @@ function renderGraph() {
     const r = radius(n), { font, lines } = label(n), p = physical.get(n.id);
     return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
   }).join('');
-  edgesLayer.innerHTML = state.graph.edges.map(e => `<path class="edge${selectedEdge === e.id ? ' selected' : ''}" data-edge="${esc(e.id)}" ${e.type === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${e.type === 'both' ? 'marker-start="url(#arrow-end)"' : ''}/>`).join('');
+  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdge === e.id ? ' selected' : ''}" ${e.type === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
 }
 function blob(rx, ry, t, wobble, seed, extra = 0, shape = null, grab = null) {
   const points = Array.from({ length: 24 }, (_, i) => { const a = i / 24 * Math.PI * 2; const wave = 1 + Math.sin(a * 3 + seed) * .014 + Math.sin(a * 4 + t * 13) * wobble * .035; const x = Math.cos(a) * (rx + extra) * wave, y = Math.sin(a) * (ry + extra) * wave; return shape ? deformPoint(x, y, rx + extra, ry + extra, shape, grab) : { x, y }; });
@@ -123,7 +126,7 @@ function frame(now) {
       const border = r => 1 / Math.sqrt((Math.cos(angle) / r.rx) ** 2 + (Math.sin(angle) / r.ry) ** 2);
       const l1 = border(ar) * .94, l2 = border(br) * .98;
       const x1 = a.x + Math.cos(angle) * l1, y1 = a.y + Math.sin(angle) * l1, x2 = b.x - Math.cos(angle) * l2, y2 = b.y - Math.sin(angle) * l2;
-      const el = edgesLayer.querySelector(`[data-edge="${CSS.escape(e.id)}"]`); if (el) el.setAttribute('d', `M${x1},${y1} C${x1 + dx * .24},${y1 + dy * .12} ${x2 - dx * .24},${y2 - dy * .12} ${x2},${y2}`);
+      const el = edgesLayer.querySelector(`[data-edge="${CSS.escape(e.id)}"]`); if (el) for (const path of el.querySelectorAll('path')) path.setAttribute('d', `M${x1},${y1} C${x1 + dx * .24},${y1 + dy * .12} ${x2 - dx * .24},${y2 - dy * .12} ${x2},${y2}`);
     }
     if (editor) positionEditor();
   }
@@ -140,10 +143,69 @@ function fit() {
 function setTool(value) { tool = value; document.querySelectorAll('[data-tool]').forEach(el => el.classList.toggle('active', el.dataset.tool === tool)); board.classList.toggle('creating', tool === 'add'); }
 function select(id, additive = false) { if (!additive) selected.clear(); if (id) { if (additive && selected.has(id)) selected.delete(id); else selected.add(id); } selectedEdge = null; renderGraph(); renderSelection(); }
 function renderSelection() {
+  closeShades();
   const el = document.querySelector('#selection-actions'); el.classList.toggle('hidden', !selected.size && !selectedEdge);
-  if (selectedEdge) { el.innerHTML = `<span class="label">Connection</span>${['line', 'arrow', 'both', 'dotted'].map(t => `<button data-edge-style="${t}" title="${t}">${icon(t)}</button>`).join('')}<button class="delete" data-delete aria-label="Delete connection">${icon('trash')}</button>`; return; }
-  el.innerHTML = `<span class="label">${selected.size === 1 ? 'Idea' : `${selected.size} ideas`}</span>${colors.map(c => `<button data-color="${c}" title="Set colour ${c}" aria-label="Set colour ${c}"><span class="swatch" style="background:${c}"></span></button>`).join('')}<div class="zoom-sep" style="align-self:center"></div><button data-copy title="Copy selected ideas" aria-label="Copy selected ideas">${icon('copy')}</button><button class="delete" data-delete title="Delete selected ideas" aria-label="Delete selected ideas">${icon('trash')}</button>`;
+  if (selectedEdge) { el.innerHTML = `<span class="label">Connection</span>${['line', 'arrow', 'reverse', 'both', 'dotted'].map(t => `<button data-edge-style="${t}" title="${({line:'Line',arrow:'Forward arrow',reverse:'Reverse arrow',both:'Two-way arrow',dotted:'Dotted line'})[t]}" aria-label="${({line:'Line',arrow:'Forward arrow',reverse:'Reverse arrow',both:'Two-way arrow',dotted:'Dotted line'})[t]}" aria-pressed="${state.graph.edges.find(e => e.id === selectedEdge)?.type === t}">${icon(t)}</button>`).join('')}<button class="delete" data-delete aria-label="Delete connection">${icon('trash')}</button>`; return; }
+  el.innerHTML = `<span class="label">${selected.size === 1 ? 'Idea' : `${selected.size} ideas`}</span>${colors.map(c => `<button data-color="${c}" aria-haspopup="true" title="Set colour ${c} · Hold for shades" aria-label="Set colour ${c}"><span class="swatch" style="background:${c}"></span></button>`).join('')}<div class="zoom-sep" style="align-self:center"></div><button data-copy title="Copy selected ideas" aria-label="Copy selected ideas">${icon('copy')}</button><button class="delete" data-delete title="Delete selected ideas" aria-label="Delete selected ideas">${icon('trash')}</button>`;
 }
+function closeShades() {
+  if (shadeHold) clearTimeout(shadeHold.timer);
+  shadeHold = null; document.querySelectorAll('[data-color][aria-expanded]').forEach(el => el.setAttribute('aria-expanded', 'false')); shadeMenu?.remove(); shadeMenu = null;
+}
+function openShades(button, keyboard = false) {
+  shadeMenu?.remove();
+  const color = button.dataset.color, box = button.getBoundingClientRect();
+  const menu = document.createElement('div'); menu.className = 'shade-picker'; menu.setAttribute('role', 'toolbar'); menu.setAttribute('aria-label', 'Colour shades');
+  menu.innerHTML = colorShades(color).map(c => `<button class="shade-option" data-shade="${c}" aria-label="Set shade ${c}" title="${c}"><span class="swatch" style="background:${c}"></span></button>`).join('');
+  menu.style.left = `${Math.max(24, Math.min(innerWidth - 24, box.x + box.width / 2))}px`;
+  menu.style.bottom = `${innerHeight - box.top + 8}px`;
+  document.body.append(menu); shadeMenu = menu;
+  button.setAttribute('aria-expanded', 'true');
+  menu.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeShades(); button.focus(); e.stopPropagation(); }
+    if (['ArrowUp', 'ArrowDown'].includes(e.key)) {
+      const choices = [...menu.querySelectorAll('button')], index = choices.indexOf(document.activeElement);
+      choices[(index + (e.key === 'ArrowUp' ? -1 : 1) + choices.length) % choices.length].focus(); e.preventDefault();
+    }
+  });
+  if (keyboard) menu.querySelector('button').focus();
+}
+function applyShade(color) {
+  const ids = [...selected]; closeShades();
+  if (ids.length) apply(ids.map(id => ({ type: 'updateNode', id, color })));
+}
+document.addEventListener('pointerdown', e => {
+  const button = e.target.closest('[data-color]');
+  if (!e.target.closest('.shade-picker') && !button) closeShades();
+  if (!button || e.button !== 0) return;
+  closeShades();
+  const hold = { button, x: e.clientX, y: e.clientY, opened: false };
+  hold.timer = setTimeout(() => { if (!button.isConnected) return; hold.opened = true; openShades(button); }, 500);
+  shadeHold = hold;
+});
+document.addEventListener('pointermove', e => {
+  if (shadeHold && !shadeHold.opened && Math.hypot(e.clientX - shadeHold.x, e.clientY - shadeHold.y) > 8) closeShades();
+});
+document.addEventListener('pointerup', e => {
+  if (!shadeHold) return;
+  const hold = shadeHold; clearTimeout(hold.timer); shadeHold = null;
+  if (!hold.opened) return;
+  suppressedColor = hold.button; suppressedUntil = performance.now() + 500;
+  const shade = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-shade]');
+  if (shade) { applyShade(shade.dataset.shade); e.preventDefault(); }
+});
+document.addEventListener('pointercancel', closeShades);
+window.addEventListener('blur', closeShades);
+window.addEventListener('resize', closeShades);
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-color]') === suppressedColor && performance.now() < suppressedUntil) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  const shade = e.target.closest('[data-shade]'); if (shade) applyShade(shade.dataset.shade);
+}, true);
+document.addEventListener('keydown', e => {
+  const button = e.target.closest('[data-color]');
+  if (button && e.key === 'ArrowUp') { e.preventDefault(); openShades(button, true); }
+  if (e.key === 'Escape') closeShades();
+});
 function nudgeLayout(newNode, exclude = new Set()) {
   const moves = []; for (const n of state.graph.nodes) { if (exclude.has(n.id) || n.root) continue; const dx = n.x - newNode.x, dy = n.y - newNode.y, d = Math.hypot(dx, dy); const needed = radius(n).rx + radius(newNode).rx + 28; if (d < needed) { const a = Math.atan2(dy || .1, dx || .1), distance = needed - d; moves.push({ type: 'updateNode', id: n.id, x: n.x + Math.cos(a) * distance, y: n.y + Math.sin(a) * distance }); physical.get(n.id).wobble = 1; } } return moves;
 }
@@ -162,7 +224,7 @@ function startEdit(id, selectAll = false) {
 }
 function positionEditor(resize = false) {
   if (!editor) return; const n = nodeById(editor.id), p = physical.get(editor.id); if (!n || !p) return;
-  const pos = worldToClient(p.x, p.y), r = radius(n), font = fontSize(n) * view.zoom;
+  const pos = worldToClient(p.x, p.y), r = radius(n), font = Math.max(12, fontSize(n)) * view.zoom;
   const width = r.rx * 1.6 * view.zoom;
   Object.assign(editor.el.style, { left: `${pos.x}px`, top: `${pos.y}px`, width: `${width}px`, fontSize: `${font}px`, lineHeight: '1.28' });
   if (resize || editor.width !== width || editor.font !== font || editor.value !== editor.el.value) {

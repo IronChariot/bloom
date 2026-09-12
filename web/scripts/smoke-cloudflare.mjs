@@ -113,6 +113,47 @@ try {
   assert.equal(value(await resumed.callTool({ name: 'list_boards', arguments: {} })).length, 2);
   const claimedEdit = value(await resumed.callTool({ name: 'edit_board', arguments: { boardId: secondId, expectedRevision: 0, operations: [{ type: 'rename', title: 'Persistent grant edit' }] } }));
   assert.equal(claimedEdit.revision, 1);
+  const call = async (name, args) => value(await resumed.callTool({ name, arguments: { boardId: secondId, ...args } }));
+  const rootId = graph.nodes[0].id;
+  const moved = await call('edit_board', { expectedLayoutRevision: claimedEdit.layoutRevision, operations: [{ type: 'updateNode', id: rootId, x: 123 }] });
+  assert.equal(moved.contentRevision, claimedEdit.contentRevision);
+  const content = await call('edit_board', { expectedContentRevision: claimedEdit.contentRevision, operations: [{ type: 'updateNode', id: rootId, text: 'Content after concurrent move' }] });
+  assert.equal(content.updated.nodes[0].x, 123);
+  assert.equal(content.layoutRevision, moved.layoutRevision);
+  for (const [precondition, operation] of [
+    [{ expectedContentRevision: claimedEdit.contentRevision }, { type: 'rename', title: 'Stale content' }],
+    [{ expectedLayoutRevision: claimedEdit.layoutRevision }, { type: 'updateNode', id: rootId, x: -12 }],
+    [{ expectedContentRevision: content.contentRevision }, { type: 'updateNode', id: rootId, x: -12 }],
+  ]) assert.equal((await resumed.callTool({ name: 'edit_board', arguments: { boardId: secondId, ...precondition, operations: [operation] } })).isError, true);
+  const raced = await Promise.all([
+    call('edit_board', { expectedContentRevision: content.contentRevision, operations: [{ type: 'updateNode', id: rootId, text: 'Concurrent content' }] }),
+    call('edit_board', { expectedLayoutRevision: content.layoutRevision, operations: [{ type: 'updateNode', id: rootId, y: 456 }] }),
+  ]);
+  assert.equal(new Set(raced.map(r => r.revision)).size, 2);
+  const merged = await call('get_board', { includeLayout: true });
+  assert.equal(merged.graph.nodes[0].text, 'Concurrent content'); assert.equal(merged.graph.nodes[0].y, 456); assert.equal(merged.graph.nodes[0].x, 123);
+  const changes = await call('get_board', { sinceRevision: claimedEdit.revision });
+  assert.equal(changes.fromRevision, 1); assert.equal(changes.revision, merged.revision); assert.equal(changes.resyncRequired, false);
+  assert.deepEqual(changes.updated.nodes, merged.graph.nodes);
+  const branch = await call('edit_board', { expectedContentRevision: merged.contentRevision, operations: [
+    { type: 'addNode', id: 'branch', parent: rootId, text: 'Branch' }, { type: 'addNode', id: 'leaf', parent: 'branch', text: 'Leaf' },
+    { type: 'connect', source: 'branch', target: 'leaf', style: 'reverse' },
+  ] });
+  assert.equal(branch.added.edges.find(e => e.target === 'leaf').type, 'reverse');
+  const removed = await call('edit_board', { expectedContentRevision: branch.contentRevision, operations: [{ type: 'deleteNodes', ids: ['leaf'] }] });
+  assert.deepEqual(removed.removed.nodeIds, ['leaf']); assert.equal(removed.removed.edgeIds.length, 1);
+  const deletion = await call('get_board', { sinceRevision: branch.revision });
+  assert.deepEqual(deletion.removed, removed.removed);
+  const empty = await call('get_board', { sinceRevision: removed.revision });
+  assert.deepEqual(empty.added, { nodes: [], edges: [] }); assert.deepEqual(empty.updated, { nodes: [], edges: [] });
+  assert.equal(empty.revision, removed.revision);
+  assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: secondId, sinceRevision: removed.revision + 1 } })).isError, true);
+  assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: secondId, sinceRevision: 0, nodeIds: ['branch'] } })).isError, true);
+  await query('DELETE FROM changes WHERE board_id = ? AND revision = 0', [secondId]);
+  assert.equal((await call('get_board', { sinceRevision: 0 })).resyncRequired, true);
+  const finalRevision = removed.revision;
+  console.log('PASS: independent content/layout preconditions, concurrent merge, stale/unsafe edits rejected, since-revision deltas, deletion cascades, empty/future/expired cursors and reverse arrows.');
+
   await query('UPDATE boards SET agent_hash = NULL, agent_enabled = 0 WHERE id = ?', [id]);
   assert.equal((await resumed.callTool({ name: 'get_board', arguments: { boardId: id } })).isError, true);
   assert.equal(value(await resumed.callTool({ name: 'list_boards', arguments: {} })).length, 1);
@@ -128,7 +169,7 @@ try {
   await query('UPDATE agent_connections SET token_hash = ? WHERE owner = ?', [digest(replacementKey), connectionOwner]);
   await denied(null, connectionKey);
   const refreshed = await connect(null, replacementKey);
-  assert.equal(value(await refreshed.callTool({ name: 'get_board', arguments: { boardId: secondId } })).revision, 1);
+  assert.equal(value(await refreshed.callTool({ name: 'get_board', arguments: { boardId: secondId } })).revision, finalRevision);
   console.log('PASS: permanent connection, empty initial permissions, short-code claim, idempotence, reconnect persistence, two boards, writes, independent revocation, code replacement, pause and connection-key rotation.');
   console.log('PASS: compact defaults, targeted reads, layout/activity opt-ins, exact edit deltas, full compatibility, atomic rollback and layout conflict protection.');
   console.log('PASS: deployed SDK discovery, graph read/edit, concurrent and stale revisions, JSON Canvas, missing screenshot, board scoping, pause, rotation, revocation, Origin rejection and human authentication gate.');

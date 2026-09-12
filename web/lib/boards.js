@@ -1,3 +1,4 @@
+import { revisions, revisionChanges, checkRevision } from './revisions.js';
 import { env } from 'cloudflare:workers';
 import { getAuthenticatedUser } from './identity.js';
 import { GraphStore, newGraph, validateGraph, fromCanvas, toCanvas } from './graph.js';
@@ -27,13 +28,13 @@ export async function listAgentBoards(owner) {
 }
 export async function accessAgentBoard(owner, id, includeImage = false) {
   if (!id || id.length > 100) fail('Choose a boardId from list_boards, or use claim_board with a board code first.', 400);
-  const board = await db().prepare(`SELECT b.id, b.graph, b.revision, b.past, b.future, b.agent_enabled${includeImage ? ', b.image, b.image_at, b.image_revision, b.image_requested' : ''} FROM boards b JOIN agent_grants g ON g.board_id = b.id AND g.agent_hash = b.agent_hash WHERE g.owner = ? AND b.id = ? AND b.agent_enabled = 1`).bind(owner, id).first();
+  const board = await db().prepare(`SELECT b.id, b.graph, b.revision, b.content_revision, b.layout_revision, b.past, b.future, b.agent_enabled${includeImage ? ', b.image, b.image_at, b.image_revision, b.image_requested' : ''} FROM boards b JOIN agent_grants g ON g.board_id = b.id AND g.agent_hash = b.agent_hash WHERE g.owner = ? AND b.id = ? AND b.agent_enabled = 1`).bind(owner, id).first();
   if (!board) fail('This connection has no active grant for that board. Ask its owner for a board code.', 403);
   return { board, user: { userId: 'agent', displayName: 'AI collaborator' }, role: 'agent' };
 }
 export async function access(id, request, ownerOnly = false, lightweight = false, includeImage = false) {
   if (!id || id.length > 100) fail('Choose a board.', 404);
-  const columns = 'id, owner, revision, agent_enabled, agent_hash, image_at, image_requested, image_revision';
+  const columns = 'id, owner, revision, content_revision, layout_revision, agent_enabled, agent_hash, image_at, image_requested, image_revision';
   const board = await db().prepare(`SELECT ${columns}${lightweight ? '' : ', graph, past, future'}${includeImage ? ', image' : ''} FROM boards WHERE id = ?`).bind(id).first(); if (!board) fail('Board not found.', 404);
   const bearer = request?.headers.get('authorization')?.replace(/^Bearer /i, '');
   if (!ownerOnly && bearer && board.agent_enabled && board.agent_hash && await hash(bearer) === board.agent_hash) return { board, user: { userId: 'agent', displayName: 'AI collaborator' }, role: 'agent' };
@@ -49,9 +50,18 @@ export async function listBoards(user) {
 export async function snapshot(board, user, role) {
   const activity = await db().prepare('SELECT actor, kind AS message, at FROM changes WHERE board_id = ? ORDER BY revision DESC LIMIT 12').bind(board.id).all();
   const presence = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
-  return { graph: validateGraph(JSON.parse(board.graph)), revision: board.revision, boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity: activity.results.reverse(), members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
+  return { graph: validateGraph(JSON.parse(board.graph)), ...revisions(board), boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity: activity.results.reverse(), members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
 }
 export async function agentSnapshot(board, user, role, options = {}) {
+  if (options.sinceRevision !== undefined) {
+    if (options.nodeIds !== undefined) fail('Use either sinceRevision or nodeIds, not both.');
+    const since = options.sinceRevision;
+    if (!Number.isInteger(since) || since < 0 || since > board.revision) fail('sinceRevision must be an existing, non-future board revision.');
+    const current = JSON.parse(board.graph);
+    const prior = since === board.revision ? { graph: board.graph } : await db().prepare('SELECT graph FROM changes WHERE board_id = ? AND revision = ?').bind(board.id, since).first();
+    if (!prior) return { boardId: board.id, ...revisions(board), fromRevision: since, resyncRequired: true, message: 'This revision is no longer retained. Call get_board without sinceRevision to resync. Do not advance your cached cursor until that read succeeds.' };
+    return { ...editDelta(board.id, since, JSON.parse(prior.graph), current, board.revision), ...revisions(board), fromRevision: since, resyncRequired: false };
+  }
   // Explicit full reads preserve the original response for clients that need it.
   if (options.view === 'full' && options.nodeIds === undefined) return snapshot(board, user, role);
   const result = readView(board, options);
@@ -75,8 +85,8 @@ export async function createBoard(user, input, title) {
   ]);
   return id;
 }
-export async function changeBoard(board, user, role, input, response = 'full') {
-  if (input.expectedRevision !== board.revision) fail('The board changed. Your edit was not applied; try again.', 409);
+export async function changeBoard(board, user, role, input, response = 'full', attempt = 0) {
+  try { checkRevision(board, input); } catch (error) { fail(error.message, 409); }
   const store = new GraphStore(JSON.parse(board.graph)); store.revision = board.revision;
   const past = JSON.parse(board.past), future = JSON.parse(board.future);
   let graph, kind;
@@ -86,9 +96,12 @@ export async function changeBoard(board, user, role, input, response = 'full') {
     const record = await db().prepare('SELECT graph FROM changes WHERE board_id = ? AND revision = ?').bind(board.id, revision).first();
     if (!record) fail('This history entry is unavailable.'); graph = validateGraph(JSON.parse(record.graph)); target.push(board.revision); kind = input.action === 'undo' ? 'Undid a shared change' : 'Redid a shared change';
   } else {
-    store.apply(input.operations, user.displayName, input.expectedRevision); graph = store.graph;
+    store.apply(input.operations, user.displayName, board.revision); graph = store.graph;
     past.push(board.revision); future.length = 0; kind = store.activity.at(-1).message;
   }
+  const changed = revisionChanges(JSON.parse(board.graph), graph);
+  const contentRevision = changed.content || !changed.layout ? board.revision + 1 : revisions(board).contentRevision;
+  const layoutRevision = changed.layout ? board.revision + 1 : revisions(board).layoutRevision;
   const text = JSON.stringify(graph); if (new TextEncoder().encode(text).length > 1_000_000) fail('Board is too large.');
   const retained = await db().prepare('SELECT revision, length(CAST(graph AS BLOB)) AS bytes FROM changes WHERE board_id = ?').bind(board.id).all();
   const sizes = new Map(retained.results.map(row => [row.revision, row.bytes]));
@@ -97,13 +110,19 @@ export async function changeBoard(board, user, role, input, response = 'full') {
   // D1 batches run atomically: update graph, history stacks and physical retention together.
   const result = await db().batch([
     db().prepare('INSERT INTO changes (board_id, revision, graph, actor, at, kind) SELECT id, revision, graph, ?, ?, ? FROM boards WHERE id = ? AND revision = ?').bind(user.displayName, Date.now(), kind, board.id, board.revision),
-    db().prepare('UPDATE boards SET graph = ?, revision = revision + 1, updated = ?, past = ?, future = ? WHERE id = ? AND revision = ?').bind(text, Date.now(), JSON.stringify(past), JSON.stringify(future), board.id, board.revision),
+    db().prepare('UPDATE boards SET graph = ?, revision = revision + 1, content_revision = ?, layout_revision = ?, updated = ?, past = ?, future = ? WHERE id = ? AND revision = ?').bind(text, contentRevision, layoutRevision, Date.now(), JSON.stringify(past), JSON.stringify(future), board.id, board.revision),
     db().prepare('DELETE FROM changes WHERE board_id = ? AND revision NOT IN (SELECT value FROM boards, json_each(boards.past) WHERE boards.id = ? UNION SELECT value FROM boards, json_each(boards.future) WHERE boards.id = ?)').bind(board.id, board.id, board.id)
   ]);
-  if (!result[1].meta.changes) fail('Someone changed the board at the same time. Your edit was not applied; try again.', 409);
+  if (!result[1].meta.changes) {
+    if (attempt < 2 && (input.expectedContentRevision !== undefined || input.expectedLayoutRevision !== undefined)) {
+      const latest = await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first();
+      if (latest) return changeBoard(latest, user, role, input, response, attempt + 1);
+    }
+    fail('Someone changed the board at the same time. Your edit was not applied; try again.', 409);
+  }
   // Use this transaction's graph, not a later SELECT that could see another writer.
-  if (response === 'delta') return editDelta(board.id, board.revision, JSON.parse(board.graph), graph);
-  return snapshot(await db().prepare('SELECT id, graph, revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first(), user, role);
+  if (response === 'delta') return { ...editDelta(board.id, board.revision, JSON.parse(board.graph), graph), contentRevision, layoutRevision };
+  return snapshot(await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first(), user, role);
 }
 export async function handleApi(request, segments) {
   const [section, id, action] = segments;
@@ -141,7 +160,7 @@ export async function handleApi(request, segments) {
     const members = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(id).all();
     const result = { revision: board.revision, members: members.results, agentEnabled: !!board.agent_enabled, captureRequested: board.agent_enabled && board.image_requested > (board.image_at || 0) && board.image_requested > now - 60000 ? board.image_requested : null };
     if (input.revision !== board.revision) {
-      const full = await db().prepare('SELECT id, graph, revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(id).first();
+      const full = await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(id).first();
       return { ...result, state: await snapshot(full, user, role) };
     }
     return result;

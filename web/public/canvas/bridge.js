@@ -40,7 +40,12 @@ window.bloom = {
   async apply(operations, expectedRevision) {
     if (!boardId) throw new Error('Open a board first.'); lastInteraction = Date.now(); pending++; notify(current);
     const id = boardId;
-    try { const next = await request(`boards/${id}/edit`, { operations, expectedRevision }); pending--; if (id === boardId) notify(next); return current; }
+    const preconditions = { expectedRevision };
+    if (current.revision === expectedRevision && Number.isInteger(current.contentRevision) && Number.isInteger(current.layoutRevision)) {
+      if (operations.some(op => op.type !== 'updateNode' || op.text !== undefined || op.color !== undefined)) preconditions.expectedContentRevision = current.contentRevision;
+      if (operations.some(op => ['updateNode', 'addNode'].includes(op.type) && (op.x !== undefined || op.y !== undefined))) preconditions.expectedLayoutRevision = current.layoutRevision;
+    }
+    try { const next = await request(`boards/${id}/edit`, { operations, ...preconditions }); pending--; if (id === boardId) notify(next); return current; }
     catch (error) { pending--; try { const next = await request(`boards/${id}`); if (id === boardId) notify(next); } catch {} throw error; }
   },
   async command(name, value) {

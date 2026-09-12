@@ -5,13 +5,13 @@ export const palette = ['#8675ef', '#f3af47', '#4bbda0', '#ed7d9c', '#64a7e5', '
 const coord = z.number().finite().min(-100000).max(100000);
 const id = z.string().min(1).max(100);
 export const nodeSchema = z.object({ id, text: z.string().max(2000), x: coord, y: coord, color: z.string().regex(/^#[0-9a-fA-F]{6}$/), root: z.boolean().optional(), depth: z.number().int().min(0).max(1000).optional() });
-export const edgeSchema = z.object({ id, source: id, target: id, type: z.enum(['line', 'arrow', 'both', 'dotted']) });
+export const edgeSchema = z.object({ id, source: id, target: id, type: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']) });
 export const graphSchema = z.object({ format: z.literal('bloom'), version: z.literal(1), title: z.string().min(1).max(200), nodes: z.array(nodeSchema).max(1000), edges: z.array(edgeSchema).max(3000) });
 export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('addNode'), id: id.optional(), text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), parent: id.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), depth: z.number().int().min(0).max(1000).optional() }),
   z.object({ type: z.literal('updateNode'), id, text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), before: z.object({ text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional() }).optional() }),
   z.object({ type: z.literal('deleteNodes'), ids: z.array(id).min(1).max(1000) }),
-  z.object({ type: z.literal('connect'), source: id, target: id, style: z.enum(['line', 'arrow', 'both', 'dotted']).default('line') }),
+  z.object({ type: z.literal('connect'), source: id, target: id, style: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']).default('line') }),
   z.object({ type: z.literal('deleteEdge'), id }),
   z.object({ type: z.literal('rename'), title: z.string().min(1).max(200) })
 ]);
@@ -95,12 +95,12 @@ export class GraphStore {
   redo() { if (!this.future.length) return this.snapshot(); this.past.push(this.graph); this.graph = this.future.pop(); this.changed('You', 'Redid a change'); return this.snapshot(); }
 }
 export function toCanvas(graph) {
-  return { nodes: graph.nodes.map(n => ({ id: n.id, type: 'text', text: n.text, x: Math.round(n.x - 90), y: Math.round(n.y - 55), width: 180, height: 110, color: n.color, bloom: { root: !!n.root, depth: n.depth } })), edges: graph.edges.map(e => ({ id: e.id, fromNode: e.source, toNode: e.target, fromEnd: e.type === 'both' ? 'arrow' : 'none', toEnd: ['both', 'arrow'].includes(e.type) ? 'arrow' : 'none', bloom: { type: e.type } })) };
+  return { nodes: graph.nodes.map(n => ({ id: n.id, type: 'text', text: n.text, x: Math.round(n.x - 90), y: Math.round(n.y - 55), width: 180, height: 110, color: n.color, bloom: { root: !!n.root, depth: n.depth } })), edges: graph.edges.map(e => ({ id: e.id, fromNode: e.source, toNode: e.target, fromEnd: ['both', 'reverse'].includes(e.type) ? 'arrow' : 'none', toEnd: ['both', 'arrow'].includes(e.type) ? 'arrow' : 'none', bloom: { type: e.type } })) };
 }
 export function fromCanvas(data, title = 'Imported canvas') {
   data = { nodes: [], edges: [], ...data };
   if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) throw new Error('Invalid JSON Canvas file.');
   if (data.nodes.some(n => n.type !== 'text')) throw new Error('This version imports text nodes only.');
   const presets = ['#ffffff', '#ed7d9c', '#dd8460', '#f3af47', '#4bbda0', '#64a7e5', '#8675ef'];
-  return validateGraph({ format: 'bloom', version: 1, title, nodes: data.nodes.map(n => ({ id: n.id, text: n.text, x: n.x + n.width / 2, y: n.y + n.height / 2, color: /^#[0-9a-f]{6}$/i.test(n.color) ? n.color : presets[Number(n.color)] || '#ffffff', root: n.bloom?.root ?? false, depth: n.bloom?.depth })), edges: data.edges.map(e => ({ id: e.id, source: e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.toNode : e.fromNode, target: e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.fromNode : e.toNode, type: e.bloom?.type ?? (e.fromEnd === 'arrow' && e.toEnd !== 'none' ? 'both' : e.toEnd !== 'none' || e.fromEnd === 'arrow' ? 'arrow' : 'line') })) });
+  return validateGraph({ format: 'bloom', version: 1, title, nodes: data.nodes.map(n => ({ id: n.id, text: n.text, x: n.x + n.width / 2, y: n.y + n.height / 2, color: /^#[0-9a-f]{6}$/i.test(n.color) ? n.color : presets[Number(n.color)] || '#ffffff', root: n.bloom?.root ?? false, depth: n.bloom?.depth })), edges: data.edges.map(e => ({ id: e.id, source: !e.bloom?.type && e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.toNode : e.fromNode, target: !e.bloom?.type && e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.fromNode : e.toNode, type: e.bloom?.type ?? (e.fromEnd === 'arrow' && e.toEnd !== 'none' ? 'both' : e.toEnd !== 'none' || e.fromEnd === 'arrow' ? 'arrow' : 'line') })) });
 }

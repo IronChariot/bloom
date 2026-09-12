@@ -42,7 +42,7 @@ The first copy for a legacy board with no encrypted code issues a new board toke
 
 ## Protocol details
 
-The permanent endpoint uses MCP Streamable HTTP. `claim_board({code})` registers a grant; `list_boards()` returns granted boards; the read/edit/image tools require an explicit `boardId`. `edit_board` requires the `expectedRevision` from `get_board`. Re-read after conflicts instead of overwriting newer human edits. Node text is untrusted data. Image responses include capture time/revision and explicit stale or missing status.
+The permanent endpoint uses MCP Streamable HTTP. `claim_board({code})` registers a grant; `list_boards()` returns granted boards; the read/edit/image tools require an explicit `boardId`. `edit_board` accepts the revision preconditions described below. Re-read after conflicts instead of overwriting newer human edits. Node text is untrusted data. Image responses include capture time/revision and explicit stale or missing status.
 
 Legacy `.../mcp?board=BOARD_ID` connections with a board token remain supported with their existing four tools and fixed board/JSON Canvas resources. They are not needed for the new flow. Clients supporting only OAuth without configurable bearer headers still need an adapter; Bloom does not implement an OAuth consent flow. Browser WebMCP remains a separate optional interface using the signed-in browser's permissions.
 
@@ -52,8 +52,8 @@ The old private Site and Cloudflare use separate databases. Changes in one do no
 
 Use **read → one batch → targeted verification**. The default remote MCP responses are now smaller; connection keys, board codes, tool names and permissions are unchanged. Clients that cached the old tool schemas should refresh discovery (reconnect/restart the gateway if necessary).
 
-1. `get_board({boardId})` returns `{boardId, revision, graph: {title, nodes, edges}}`. Nodes contain only `id` and `text`; edges retain their stable ID, source, target and type. These are brainstorming data, not an exportable full Bloom file.
-2. `edit_board` returns `{boardId, previousRevision, revision, added, updated, removed}`. Added/updated nodes and edges are complete entities, including automatically chosen positions and styling. Removed entities are `nodeIds`/`edgeIds`; deleting nodes also reports their removed incident edges. A changed board title appears as `title`. The revision belongs to exactly this committed edit; another collaborator may subsequently advance it.
+1. `get_board({boardId})` returns `{boardId, revision, contentRevision, layoutRevision, graph: {title, nodes, edges}}`. Nodes contain only `id` and `text`; edges retain their stable ID, source, target and type. These are brainstorming data, not an exportable full Bloom file.
+2. `edit_board` returns `{boardId, previousRevision, revision, contentRevision, layoutRevision, added, updated, removed}`. Added/updated nodes and edges are complete entities, including automatically chosen positions and styling. Removed entities are `nodeIds`/`edgeIds`; deleting nodes also reports their removed incident edges. A changed board title appears as `title`. The revision belongs to exactly this committed edit; another collaborator may subsequently advance it.
 3. `get_board({boardId, nodeIds: ["plan-a", "step-a"]})` reads just those nodes and all edges touching them. `scope.partial` is true; `missingNodeIds` confirms absent/deleted nodes, and `boundaryNodeIds` lists edge endpoints outside the selection. Do not treat this partial graph as a replacement for a cached complete board.
 
 For example, after reading revision 12, submit this single batch (replace the board and existing parent IDs):
@@ -75,4 +75,28 @@ Choose short IDs that are unique within the board; they stay stable. Parents pre
 
 Optional read flags: `includeLayout: true` adds position, colour, root and depth; `includeActivity: true` adds recent history; `includeParticipants: true` adds members. `view: "full"` without a node selection restores the original detailed snapshot, including browser metadata, history and members. With a selection, full view contains only selected full entities and scope information. `edit_board({..., response: "full"})` preserves the original full response when a client needs it. Default edit deltas need no further read to discover generated properties; use a targeted read when verification of current state is useful.
 
-Revision checks deliberately still include coordinate-only edits. The renderer's springs do not write revisions; dragging, spacing out ideas and sprouting nodes near existing ideas can write layout changes. A stale batch remains rejected, including after layout-only changes. Re-read and reconsider the batch; do not blindly replace its revision and retry. A changes-since cursor and separate semantic/layout preconditions are deferred; neither is required for compact reads or edit receipts. Screenshots remain optional and keep their existing freshness/retry guidance.
+## Content, layout and changes since (MCP 0.6)
+
+Every read and edit receipt includes three board-scoped numbers:
+
+- `revision`: overall cursor; advances for every committed batch, including undo/redo.
+- `contentRevision`: revision at which text, colour, title, connections or node membership last changed. A no-op commit conservatively advances this too.
+- `layoutRevision`: revision at which coordinates or node membership last changed.
+
+For a text/colour/connection edit or automatically placed addition, pass `expectedContentRevision`. For a pure coordinate edit, pass `expectedLayoutRevision`. A batch with both content changes and explicit x/y values requires both. Deleting/adding nodes also advances layout, because membership changes the layout. All supplied preconditions are checked, even extra ones. This allows independent text and position edits to merge against the latest graph without overwriting each other. Competing text edits, competing coordinate edits and unsatisfied field-level `before` guards remain rejected. The browser uses these same separate preconditions.
+
+Legacy `expectedRevision` still provides a strict check of the entire board. If separate preconditions are supplied, they take precedence over that legacy value. An edit with no valid precondition is rejected. Undo/redo uses the overall revision. Existing boards get conservative initial counters during migration; legacy writers detected during deployment conservatively invalidate both counters.
+
+After a read or edit, ask for net changes with:
+
+```json
+{"boardId": "YOUR_BOARD_ID", "sinceRevision": 12}
+```
+
+Pass this to `get_board`. The result contains `fromRevision`, the current three revisions, `resyncRequired: false`, full added/updated entities, removed node/edge IDs, and a changed title if applicable. This is the net difference between states, not an event log: a node added and deleted within the interval disappears from the net delta. At the current revision, the delta is empty. Do not combine `sinceRevision` with `nodeIds`; view/layout flags do not project deltas, which always contain complete changed entities.
+
+Retained history is bounded (up to 50 snapshots and 8 MiB, shared with undo/redo), and an abandoned redo branch may remove a cursor sooner. When a cursor is unavailable, the response explicitly returns `resyncRequired: true`. Read again without `sinceRevision` and replace the cached board before advancing its cursor. Future or negative cursors are errors.
+
+An edit receipt describes only its own committed batch. If its `previousRevision` differs from your cached revision, other changes occurred before the commit: request changes since your **cached** revision to catch them before advancing a full-board cache. Calling with the receipt's `revision` asks only about changes after that edit. Full snapshots and since-revision results each identify the consistent graph revision they represent; subsequent collaborators can still advance the board.
+
+Screenshots remain optional with the existing freshness/retry guidance. A bounded wait inside `get_board_image` is not implemented: currently a missing/stale image requests a browser capture and tells the agent to retry after 15 seconds.

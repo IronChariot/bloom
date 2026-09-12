@@ -1,3 +1,4 @@
+import { revisions } from './revisions.js';
 // Agent responses deliberately omit browser state and layout unless requested.
 export function readView(board, { view = 'compact', nodeIds, includeLayout = false } = {}) {
   const graph = JSON.parse(board.graph);
@@ -5,7 +6,7 @@ export function readView(board, { view = 'compact', nodeIds, includeLayout = fal
   const nodes = ids ? graph.nodes.filter(n => ids.has(n.id)) : graph.nodes;
   const edges = ids ? graph.edges.filter(e => ids.has(e.source) || ids.has(e.target)) : graph.edges;
   const result = {
-    boardId: board.id, revision: board.revision,
+    boardId: board.id, ...revisions(board),
     graph: {
       ...(view === 'full' ? { format: graph.format, version: graph.version } : {}),
       title: graph.title,
@@ -24,7 +25,7 @@ export function readView(board, { view = 'compact', nodeIds, includeLayout = fal
   return result;
 }
 
-export function editDelta(boardId, previousRevision, before, after) {
+export function editDelta(boardId, previousRevision, before, after, revision = previousRevision + 1) {
   function diff(oldEntities, newEntities) {
     const old = new Map(oldEntities.map(e => [e.id, e]));
     const current = new Set(newEntities.map(e => e.id));
@@ -36,7 +37,7 @@ export function editDelta(boardId, previousRevision, before, after) {
   }
   const nodes = diff(before.nodes, after.nodes), edges = diff(before.edges, after.edges);
   return {
-    boardId, previousRevision, revision: previousRevision + 1,
+    boardId, previousRevision, revision,
     added: { nodes: nodes.added, edges: edges.added },
     updated: { nodes: nodes.updated, edges: edges.updated },
     removed: { nodeIds: nodes.removed, edgeIds: edges.removed },

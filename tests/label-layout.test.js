@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { labelLayout, wrapLabel } from '../web/public/canvas/label-layout.js';
+import { labelLayout, wrapLabel, MIN_LABEL_FONT } from '../web/public/canvas/label-layout.js';
 const measure = (text, font) => Array.from(text).length * font * .6;
-test('deep leaf labels remain complete without shrinking below 12px', () => {
+test('deep leaf labels remain complete shrink only as needed and remain above the minimum', () => {
   for (const depth of [2, 4, 8, 1000]) for (const text of ['Automatic placement', 'Explore new possibilities together', 'ArchitectureAndCollaboration', 'One line\nAnother line']) {
     const label = labelLayout({ text, depth }, measure);
     assert.equal(label.truncated, false);
     assert.equal(label.lines.join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
-    assert.ok(label.font >= 12);
+    assert.ok(label.font >= MIN_LABEL_FONT);
     assert.ok(label.lines.every(line => measure(line, label.font) <= label.rx * 1.35));
     assert.ok(label.lines.length * label.font * 1.28 <= label.ry * 1.35 + .001);
   }
@@ -16,6 +16,14 @@ test('deep leaf labels remain complete without shrinking below 12px', () => {
 test('long-word wrapping preserves Unicode and lengthy notes have a bounded preview', () => {
   assert.equal(wrapLabel('😀'.repeat(12), 5, text => Array.from(text).length).join(''), '😀'.repeat(12));
   const label = labelLayout({ text: 'A lengthy note '.repeat(140), depth: 5 }, measure);
-  assert.equal(label.truncated, true); assert.equal(label.lines.length, 8);
+  assert.equal(label.truncated, true); assert.equal(label.font, MIN_LABEL_FONT);
   assert.ok(label.lines.at(-1).endsWith('…')); assert.ok(label.rx <= 180);
+});
+
+test('overflow shrinks text inside fixed bubble dimensions before ellipsizing', () => {
+  const short = labelLayout({ text: 'An ordinary moderately long useful label', depth: 2 }, measure);
+  const long = labelLayout({ text: 'An ordinary moderately long label with some extra helpful detail', depth: 2 }, measure);
+  assert.equal(short.rx, long.rx); assert.equal(short.ry, long.ry);
+  assert.ok(long.font < short.font);
+  assert.equal(long.truncated, false);
 });

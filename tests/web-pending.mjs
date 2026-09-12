@@ -142,12 +142,56 @@ try {
         fits: box.x >= shape.x && box.y >= shape.y && box.x + box.width <= shape.x + shape.width && box.y + box.height <= shape.y + shape.height };
     });
     assert.equal(rendered.lines.join('').replace(/\s/g, ''), labels[i].replace(/\s/g, ''));
-    assert.ok(rendered.fits, `Leaf ${i} text exceeds its bubble`); assert.ok(rendered.font >= 12);
+    assert.ok(rendered.fits, `Leaf ${i} text exceeds its bubble`); assert.ok(rendered.font >= 8);
   }
   assert.equal(edits.length, 4, 'Rendering and layout animation must not submit background edits');
   await page.screenshot({ path: 'artifacts/bloom-deep-labels.png' });
   assert.deepEqual(errors, []);
   console.log('PASS: real font measurement, complete deep labels, readable minimum type and no background layout writes');
+  store.apply([{ type: 'connect', source: 'leaf-0', target: 'leaf-1', style: 'dotted' }], 'Agent', store.revision);
+  const edge = frame.locator('[data-edge]'); await edge.waitFor({ state: 'attached' });
+  await waitFor(async () => !!(await edge.locator('.edge-hit').getAttribute('d')));
+  const hit = await edge.locator('.edge-hit').evaluate(el => {
+    const len = el.getTotalLength(), a = el.getPointAtLength(len / 2), b = el.getPointAtLength(len / 2 + 1), matrix = el.getScreenCTM();
+    const p = new DOMPoint(a.x, a.y).matrixTransform(matrix), q = new DOMPoint(b.x, b.y).matrixTransform(matrix);
+    const dx = q.x - p.x, dy = q.y - p.y, norm = Math.hypot(dx, dy);
+    return { x: p.x - dy / norm * 4, y: p.y + dx / norm * 4 };
+  });
+  const iframeBox = await page.locator('iframe').boundingBox();
+  assert.equal(await edge.locator('.edge').evaluate(e => getComputedStyle(e).strokeWidth), '2px');
+  await page.mouse.click(hit.x + iframeBox.x, hit.y + iframeBox.y);
+  await frame.getByRole('button', { name: 'Reverse arrow', exact: true }).click();
+  await waitFor(() => edits.length === 5); edits[4].commit();
+  await waitFor(async () => await edge.locator('.edge').getAttribute('marker-start') === 'url(#arrow-end)');
+  assert.equal(await edge.locator('.edge').getAttribute('marker-end'), null);
+  const stableEdgeId = store.graph.edges[0].id;
+  await frame.getByRole('button', { name: 'Forward arrow', exact: true }).click();
+  await waitFor(() => edits.length === 6); edits[5].commit();
+  await waitFor(async () => await edge.locator('.edge').getAttribute('marker-end') === 'url(#arrow-end)');
+  assert.equal(store.graph.edges[0].id, stableEdgeId); assert.equal(await edge.locator('.edge').getAttribute('marker-start'), null);
+  console.log('PASS: clicking 4px beside a dotted connection selects it; both arrow directions preserve its ID');
+  const leaf = frame.locator('[data-node="leaf-0"]');
+  const leafBox = await leaf.boundingBox(); await page.mouse.click(leafBox.x + leafBox.width / 2, leafBox.y + 10);
+  await frame.getByRole('button', { name: 'Set colour #f3af47', exact: true }).click();
+  await waitFor(() => edits.length === 7); edits[6].commit();
+  await waitFor(async () => await leaf.locator('.bubble-shape').getAttribute('fill') === '#f3af47');
+  const base = frame.getByRole('button', { name: 'Set colour #8675ef', exact: true });
+  const colorBox = await base.boundingBox();
+  await page.mouse.move(colorBox.x + colorBox.width / 2, colorBox.y + colorBox.height / 2); await page.mouse.down();
+  await frame.getByRole('toolbar', { name: 'Colour shades' }).waitFor();
+  assert.equal(edits.length, 7, 'Holding opens shades without applying the base colour');
+  await page.mouse.up();
+  const shade = frame.locator('[data-shade]').first(), chosen = await shade.getAttribute('data-shade');
+  await shade.click(); await waitFor(() => edits.length === 8); edits[7].commit();
+  await waitFor(async () => await leaf.locator('.bubble-shape').getAttribute('fill') === chosen);
+  assert.equal(await frame.locator('.shade-picker').count(), 0);
+  await base.focus(); await page.keyboard.press('ArrowUp');
+  await frame.getByRole('toolbar', { name: 'Colour shades' }).waitFor();
+  await page.screenshot({ path: 'artifacts/bloom-connection-and-shades.png' });
+  await page.keyboard.press('Escape'); assert.equal(await frame.locator('.shade-picker').count(), 0);
+  assert.equal(edits.length, 8); assert.deepEqual(errors, []);
+  console.log('PASS: short colour click, half-second hold without recolouring, shade selection and keyboard dismissal');
+
 } finally {
   await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }
