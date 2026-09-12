@@ -31,9 +31,38 @@ function download(data, extension) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${(current.graph.title || 'Brainstorm').replace(/[<>:"/\\|?*]/g, '-')}.${extension}`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 async function upload() {
+  const target = boardId, expectedRevision = current?.revision;
   const input = document.createElement('input'); input.type = 'file'; input.accept = '.bloom,.canvas,.json'; input.setAttribute('aria-label', 'Import brainstorm'); input.hidden = true; document.body.append(input);
-  input.addEventListener('change', async () => { try { const file = input.files[0]; if (!file) return; if (file.size > 1_000_000) throw new Error('Board is too large (maximum 1 MB).'); const graph = JSON.parse(await file.text()); const result = await request('boards', { graph, title: file.name.replace(/\.[^.]+$/, '') }); await refreshList(); await switchBoard(result.id); } catch (error) { report(error.message); } finally { input.remove(); } }); input.click();
+  input.addEventListener('cancel', () => input.remove(), { once: true });
+  input.addEventListener('change', async () => {
+    let saving = false;
+    try {
+      const file = input.files[0]; if (!file) return;
+      // Downloads are pretty-printed, so allow formatting overhead before checking graph size.
+      if (file.size > 4_000_000) throw new Error('This file is too large to import (maximum file size 4 MB).');
+      let graph; try { graph = JSON.parse(await file.text()); } catch { throw new Error('This file is not valid JSON. Choose a downloaded Bloom board or a JSON Canvas file.'); }
+      if (!graph || typeof graph !== 'object' || Array.isArray(graph) || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || (graph.format !== undefined && graph.format !== 'bloom')) throw new Error('Choose a downloaded Bloom board or a JSON Canvas file.');
+      if (new TextEncoder().encode(JSON.stringify(graph)).length > 1_000_000) throw new Error('Board contents are too large (maximum 1 MB, excluding formatting).');
+      if (target !== boardId) throw new Error('The open board changed while you were choosing a file. Please upload again.');
+      if (pending || (target && expectedRevision !== current.revision)) throw new Error('The board changed while you were choosing a file. Please review it and upload again.');
+      const title = file.name.replace(/\.[^.]+$/, '').slice(0, 200);
+      if (target) {
+        pending++; saving = true; notify(current);
+        const next = await request(`boards/${target}/edit`, { action: 'import', graph, title, expectedRevision });
+        pending--; saving = false;
+        if (target === boardId) { notify(next); actions.forEach(fn => fn({ type: 'imported' })); }
+      } else {
+        const result = await request('boards', { graph, title }); await refreshList(); await switchBoard(result.id);
+      }
+    } catch (error) {
+      if (saving) { pending--; saving = false; }
+      if (target && target === boardId) { try { notify(await request(`boards/${target}`)); } catch {} }
+      report(error.message);
+    } finally { input.remove(); }
+  }, { once: true });
+  input.click();
 }
+
 async function writeClipboard(text) { localClipboard = text; try { await navigator.clipboard.writeText(text); } catch { const el = document.createElement('textarea'); el.value = text; document.body.append(el); el.select(); document.execCommand('copy'); el.remove(); } }
 function report(message) { actions.forEach(fn => fn({ type: 'error', message })); }
 window.bloom = {
@@ -170,7 +199,7 @@ try {
   rendererReady = true;
   const people = document.createElement('button'); people.id = 'people'; people.className = 'share-button'; people.textContent = 'Share board'; people.onclick = sharePanel; document.querySelector('#session-toggle').before(people);
   notify(current);
-  document.addEventListener('keydown', e => { if (!(e.ctrlKey || e.metaKey) || e.target.matches('input,textarea')) return; const names = { s: 'save', o: 'open', n: 'new', w: 'close' }; const name = names[e.key.toLowerCase()]; if (name) { e.preventDefault(); window.bloom.command(name).catch(err => report(err.message)); } });
+  document.addEventListener('keydown', e => { if (!(e.ctrlKey || e.metaKey) || e.target.matches('input,textarea')) return; const names = { s: 'save', o: 'open', n: 'new', w: 'close' }; const name = names[e.key.toLowerCase()]; if (name) { e.preventDefault(); actions.forEach(fn => fn({ type: 'command', name })); } });
   const context = document.modelContext;
   if (context?.registerTool) {
     const lifecycle = new AbortController(); window.addEventListener('pagehide', () => lifecycle.abort(), { once: true });

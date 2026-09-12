@@ -1,8 +1,9 @@
+import { importedGraph } from './import-board.js';
 import { profileIdentity, saveProfile, attributionNames, boardActivity } from './profiles.js';
 import { revisions, revisionChanges, checkRevision } from './revisions.js';
 import { env } from 'cloudflare:workers';
 import { getAuthenticatedUser } from './identity.js';
-import { GraphStore, newGraph, validateGraph, fromCanvas, toCanvas } from './graph.js';
+import { GraphStore, newGraph, validateGraph, toCanvas } from './graph.js';
 import { limitHistory } from './history.js';
 import { codeToken } from '../public/canvas/agent-code.js';
 import { sealToken, openToken } from './agent-secrets.js';
@@ -78,7 +79,7 @@ export async function agentSnapshot(board, user, role, options = {}) {
   return result;
 }
 export async function createBoard(user, input, title) {
-  const graph = input ? input.format === 'bloom' ? validateGraph(input) : fromCanvas(input, title || 'Imported brainstorm') : newGraph();
+  const graph = input ? importedGraph(input, title || 'Imported brainstorm') : newGraph();
   const id = crypto.randomUUID(), now = Date.now();
   if (new TextEncoder().encode(JSON.stringify(graph)).length > 1_000_000) fail('Board is too large.');
   await db().batch([
@@ -97,6 +98,9 @@ export async function changeBoard(board, user, role, input, response = 'full', a
     const revision = source.pop(); if (revision === undefined) fail('Nothing to ' + input.action + '.');
     const record = await db().prepare('SELECT graph FROM changes WHERE board_id = ? AND revision = ?').bind(board.id, revision).first();
     if (!record) fail('This history entry is unavailable.'); graph = validateGraph(JSON.parse(record.graph)); target.push(board.revision); kind = input.action === 'undo' ? 'Undid a shared change' : 'Redid a shared change';
+  } else if (input.action === 'import') {
+    graph = importedGraph(input.graph, input.title); kind = 'Imported a board';
+    past.push(board.revision); future.length = 0;
   } else {
     store.apply(input.operations, user.displayName, board.revision, user.userId === 'agent' ? user.displayName : user.email || user.userId); graph = store.graph;
     past.push(board.revision); future.length = 0; kind = store.activity.at(-1).message;

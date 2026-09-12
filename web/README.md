@@ -14,6 +14,8 @@ Node moves, text and colour edits stay visible locally while saving. Queued edit
 
 The menu provides new boards, import, download, duplicate, recent boards, JSON Canvas export and close. A downloaded .bloom file is an offline copy; cloud persistence does not depend on downloading. Existing desktop .bloom files import through the menu. Save and export use browser downloads.
 
+**Upload board**, next to Download, restores a `.bloom` download or supported text-node JSON Canvas file into the current board. Its title, graph, styles and petals replace the previous contents as one shared undo/redo step; the board ID, members, sharing links and agent grants stay in place. The file-menu import and Ctrl+O use the same flow. With no board open, importing creates a board. Pending text edits are saved before the picker opens. Invalid/oversized files and stale revisions are rejected without replacing the board. `node tests/web-import.mjs` verifies an actual browser download/upload roundtrip, undo/redo and failure cases against the real API handlers with isolated SQLite storage.
+
 Users can choose **File menu → Your name…** to save an account-wide display name. Comments (including their edit attribution), activity and board participants use that name. Existing email-attributed comments and activity resolve to the current profile without rewriting graph history or changing account permissions. Profile changes reach open boards through presence sync. Names are optional; an account without a chosen name retains its existing identity label.
 
 ## Agent access
