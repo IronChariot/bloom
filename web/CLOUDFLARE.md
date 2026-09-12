@@ -63,6 +63,8 @@ MCP 0.7 adds independent connection patterns/arrowheads, bulk styles and persist
 
 Visual follow-up: browser version `f14db5ba-c680-4bcd-9f32-6d8e07121d22` anchors connections to the actual animated quadratic blob outlines, and renders larger rounded petals behind blobs with larger icons. Chrome verified 648 outline intersections across growth, wobble and drag deformation, both connection endpoints, and exposed-petal clicks, comments and drag reordering. All 26 core tests, both browser suites and both Worker builds passed. Only the browser Worker needed deployment.
 
+Petal menu polish: browser version `f8c383a6-cebe-4ad5-a998-49d2ef6a8f9e` uses centred SVG action icons and a bin icon for Delete petal, keeping the central cross for Close. Both menus were visually checked in Chrome and the petal interaction suite passed.
+
 The Cloudflare dashboard's MCP CPU chart showed P50 4.25 ms, P90 13.02 ms and P99 16.72 ms over its last-24-hours sample; the Worker overview reported 25 invocations and zero errors. These are limited samples across deployed versions, not proof that every workload stays within the Free plan CPU allowance. Larger boards and sustained usage still need measurement. The telemetry API remains unavailable to the Wrangler credential (403), but dashboard metrics are accessible. History, polling and image budgets are described in README.md.
 
 Remaining external checks: a second human's actual invitation/sign-in and installing the prepared configuration on the actual Hermes Discord gateway. These require that person's allowed email and access to the other machine respectively. No second user was added to the Access allow policy during deployment.

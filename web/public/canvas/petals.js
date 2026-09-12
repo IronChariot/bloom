@@ -3,6 +3,15 @@ import { arrangePetals } from './petal-model.js';
 
 const emojis = ['😀','😃','😊','😍','🥰','😎','🤔','🧐','😮','😂','🥳','😴','😬','😢','😡','🤯','👍','👎','❤️','⭐','🔥','💡','🎯','✅','❓','⚠️','🚀','🌱','🎉','💪','👀','🙏'];
 const commentIcon = '<path d="M-7-5h14v9H0l-4 4V4h-3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>';
+// Action icons use centred SVG geometry rather than font-dependent glyph baselines.
+const menuIcons = {
+  color: '<circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none"/>',
+  smile: '<circle cx="12" cy="12" r="8"/><path d="M8 14a4.5 4.5 0 0 0 8 0M9 9h.01M15 9h.01"/>',
+  edit: '<path d="m4 15 11-11 5 5L9 20H4zM12 7l5 5"/>',
+  trash: '<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>',
+  close: '<path d="m6 6 12 12M6 18 18 6"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
+};
 const mix = (color, amount) => '#' + [1,3,5].map(i => { const c = parseInt(color.slice(i,i+2),16); return Math.round(c + ((amount < 0 ? 0 : 255)-c)*Math.abs(amount)).toString(16).padStart(2,'0'); }).join('');
 const ownerId = el => { const owner = el.closest('[data-node], [data-petal-node]'); return owner?.dataset.node || owner?.dataset.petalNode; };
 const angleFor = slot => -Math.PI / 4 + slot * Math.PI / 4;
@@ -35,24 +44,25 @@ export function createPetals({ board, getState, nodeById, getPhysical, radius, c
     const button = document.createElement('button'); button.type='button'; button.className='petal-choice'; button.setAttribute('aria-label',label); button.title=label;
     button.style.left=`calc(50% + ${Math.cos(angle)*radius}px)`; button.style.top=`calc(50% + ${Math.sin(angle)*radius}px)`;
     if(color) { button.style.background=color; button.classList.add('petal-color-choice'); }
-    button.textContent=content;
-    if(label==='Comment petal')button.innerHTML=`<svg viewBox="-12 -12 24 24">${commentIcon}</svg>`;
-    if(label==='Blank petal')button.innerHTML='<svg viewBox="-20 -20 40 40"><ellipse rx="17" ry="16" fill="white"/></svg>';
+    if(menuIcons[content])button.innerHTML=`<svg viewBox="0 0 24 24" aria-hidden="true">${menuIcons[content]}</svg>`;
+    else button.textContent=content;
+    if(label==='Comment petal')button.innerHTML=`<svg viewBox="-12 -12 24 24" aria-hidden="true">${commentIcon}</svg>`;
+    if(label==='Blank petal')button.innerHTML='<svg viewBox="-20 -20 40 40" aria-hidden="true"><ellipse rx="17" ry="16" fill="white"/></svg>';
     button.addEventListener('click',action); menu.append(button); return button;
   }
-  function back() { radialButton('Back','‹',0,0,choices); }
+  function back() { radialButton('Back','back',0,0,choices); }
   function choices() {
     if(!context)return;
     const petal=context.petalId && petalById(context.nodeId,context.petalId);
     panel(petal?210:190,petal?'Edit petal':'Add petal');
     const actions = petal ? [
-      ['Change petal colour','●',colorMenu],
-      ...(petal.kind !== 'comment' ? [['Choose emoticon','☺',emojiMenu]] : []),
-      ...(petal.kind !== 'emoji' ? [[petal.kind==='comment'?'Edit comment':'Add comment','✎',commentMenu]] : []),
-      ['Delete petal','×',() => save({type:'deletePetal'})]
-    ] : [['Blank petal','●',colorMenu],['Emoticon petal','☺',emojiMenu],['Comment petal','✎',commentMenu]];
+      ['Change petal colour','color',colorMenu],
+      ...(petal.kind !== 'comment' ? [['Choose emoticon','smile',emojiMenu]] : []),
+      ...(petal.kind !== 'emoji' ? [[petal.kind==='comment'?'Edit comment':'Add comment','edit',commentMenu]] : []),
+      ['Delete petal','trash',() => save({type:'deletePetal'})]
+    ] : [['Blank petal','●',colorMenu],['Emoticon petal','smile',emojiMenu],['Comment petal','✎',commentMenu]];
     actions.forEach(([label,glyph,action],i)=>radialButton(label,glyph,-Math.PI/2+i*Math.PI*2/actions.length,64,action));
-    radialButton('Close petal menu','×',0,0,close).classList.add('petal-menu-close');
+    radialButton('Close petal menu','close',0,0,close).classList.add('petal-menu-close');
     menu.querySelector('button').focus({preventScroll:true});
   }
   function colorMenu() {

@@ -78,7 +78,7 @@ try{
   console.log('PASS: arrow endpoints meet rendered outlines; 648 intersections across directions, growth, wobble and drag deformation');
 
   async function right(){await clickNode(root,{button:'right'});await frame.getByRole('dialog',{name:'Add petal',exact:true}).waitFor();}
-  await right();await frame.getByRole('button',{name:'Blank petal',exact:true}).click();
+  await right();await page.screenshot({path:'artifacts/bloom-add-petal-menu.png',animations:'disabled'});await frame.getByRole('button',{name:'Blank petal',exact:true}).click();
   assert.equal(await frame.locator('.petal-color-choice').count(),24);
   await page.screenshot({path:'artifacts/bloom-petal-colours.png',animations:'disabled'});
   await frame.locator('.petal-color-choice').first().click();await saved();await frame.locator(`[data-petal-node="${root}"] [data-petal]`).waitFor();
@@ -114,7 +114,7 @@ try{
   await page.mouse.move(a.x,a.y);await page.mouse.down();await page.mouse.move(b.x,b.y,{steps:10});
   await wait(async()=>await petal(emoji.id).getAttribute('transform')!==oldTransform);await page.screenshot({path:'artifacts/bloom-petals-drag.png'});await page.mouse.up();await saved();
   assert.equal(store.graph.nodes[0].petals.find(p=>p.id===plain.id).slot,1);assert.equal(new Set(store.graph.nodes[0].petals.map(p=>p.slot)).size,3);
-  await clickPetal(plain.id);await frame.getByRole('button',{name:'Delete petal',exact:true}).click();await saved();assert.equal(store.graph.nodes[0].petals.length,2);
+  await clickPetal(plain.id);await page.screenshot({path:'artifacts/bloom-edit-petal-menu.png',animations:'disabled'});await frame.getByRole('button',{name:'Delete petal',exact:true}).click();await saved();assert.equal(store.graph.nodes[0].petals.length,2);
   await frame.getByRole('button',{name:'Undo',exact:true}).click();await saved();assert.equal(store.graph.nodes[0].petals.length,3);
   for(let i=0;i<5;i++)store.apply([{type:'addPetal',nodeId:root,kind:'color',color:'#8675ef'}]);
   await wait(async()=>await frame.locator(`[data-petal-node="${root}"] [data-petal]`).count()===8);
