@@ -17,9 +17,9 @@ const labelSchema = z.string().max(80);
 export const nodeSchema = z.object({ id, text: z.string().max(2000), x: coord, y: coord, color: z.string().regex(/^#[0-9a-fA-F]{6}$/), petals: z.array(petalSchema).max(8).optional(), root: z.boolean().optional(), depth: z.number().int().min(0).max(1000).optional(), size: sizeSchema.optional() });
 export const edgeSchema = z.object({ id, source: id, target: id, type: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']), pattern: z.enum(['solid', 'dotted']).optional(), label: labelSchema.optional() });
 export const graphSchema = z.object({ format: z.literal('bloom'), version: z.literal(1), title: z.string().min(1).max(200), nodes: z.array(nodeSchema).max(1000), edges: z.array(edgeSchema).max(3000) });
-export const operationSchema = z.discriminatedUnion('type', [
+const operationVariants = [
   z.object({ type: z.literal('addNode'), id: id.optional(), text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), parent: id.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), depth: z.number().int().min(0).max(1000).optional(), size: sizeSchema.optional() }),
-  z.object({ type: z.literal('updateNode'), id, text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), size: sizeSchema.optional(), before: z.object({ text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional() }).optional() }),
+  z.object({ type: z.literal('updateNode'), id, text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), size: sizeSchema.optional(), depth: z.number().int().min(0).max(1000).optional(), before: z.object({ text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional() }).optional() }),
   z.object({ type: z.literal('deleteNodes'), ids: z.array(id).min(1).max(1000) }),
   z.object({ type: z.literal('connect'), source: id, target: id, style: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']).default('line'), pattern: z.enum(['solid', 'dotted']).optional(), label: labelSchema.optional() }),
   z.object({ type: z.literal('colorNodes'), ids: z.array(id).min(1).max(1000), color: colorSchema }),
@@ -32,7 +32,9 @@ export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('movePetal'), nodeId: id, id, slot: z.number().int().min(0).max(7) }),
   z.object({ type: z.literal('deleteEdge'), id }),
   z.object({ type: z.literal('rename'), title: z.string().min(1).max(200) })
-]);
+];
+// Strict: an unknown or misspelled field is an error, never a silently dropped instruction.
+export const operationSchema = z.discriminatedUnion('type', operationVariants.map(variant => variant.strict()));
 
 const GOLDEN_ANGLE = 2.39996, PLACEMENT_GAP = 26;
 const clampCoord = value => Math.max(-100000, Math.min(100000, value));
@@ -143,7 +145,7 @@ export class GraphStore {
       } else if (op.type === 'updateNode') {
         const n = find(op.id);
         for (const [key, value] of Object.entries(op.before || {})) if (n[key] !== value) throw new Error('This idea changed while you were editing. Review the latest version and try again.');
-        for (const key of ['text', 'x', 'y', 'color', 'size']) if (op[key] !== undefined) n[key] = op[key];
+        for (const key of ['text', 'x', 'y', 'color', 'size', 'depth']) if (op[key] !== undefined) n[key] = op[key];
       } else if (op.type === 'deleteNodes') {
         op.ids.forEach(find); g.nodes = g.nodes.filter(n => !op.ids.includes(n.id)); g.edges = g.edges.filter(e => !op.ids.includes(e.source) && !op.ids.includes(e.target));
       } else if (op.type === 'connect') {

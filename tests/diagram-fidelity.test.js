@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GraphStore, newGraph, nodesOverlap, validateGraph, toCanvas, fromCanvas } from '../web/lib/graph.js';
-import { labelExtent, labelLayout } from '../web/public/canvas/label-layout.js';
+import { labelExtent, labelLayout, nodeScale } from '../web/public/canvas/label-layout.js';
 
 const chain = (store, prefix, from, count, extra = {}) => {
   const ops = []; let parent = from;
@@ -66,22 +66,43 @@ test('edges carry labels through operations and file roundtrips', () => {
   assert.throws(() => store.apply([{ type: 'updateEdge', id: first.id, label: 'x'.repeat(81) }]));
 });
 
-test('explicit size frees a blob from its generation, within limits', () => {
+test('size is absolute, so one value makes every blob the same size', () => {
   const store = new GraphStore(newGraph()); const root = store.graph.nodes[0].id;
-  const deep = chain(store, 's', root, 10);
-  const shrunk = labelExtent(store.graph.nodes.find(n => n.id === deep));
-  store.apply([{ type: 'updateNode', id: deep, size: 2.5 }]);
-  const node = store.graph.nodes.find(n => n.id === deep);
-  assert.equal(node.size, 2.5);
-  const grown = labelExtent(node);
-  assert.ok(grown.rx > shrunk.rx * 2.4 && grown.ry > shrunk.ry * 2.4, 'size multiplies the generation scale');
-  assert.ok(labelLayout(node, (t, f) => t.length * f * .5).font > labelLayout({ ...node, size: 1 }, (t, f) => t.length * f * .5).font);
-  // A size travels through validation and a file roundtrip, and stays inside its range.
-  assert.equal(validateGraph(fromCanvas(toCanvas(store.graph))).nodes.find(n => n.id === deep).size, 2.5);
+  chain(store, 's', root, 12);
+  const measure = (t, f) => t.length * f * .5;
+  const ids = Array.from({ length: 12 }, (_, i) => 's' + i);
+  // By default a deep chain tapers away to the floor.
+  const tapered = ids.map(id => labelExtent(store.graph.nodes.find(n => n.id === id)).rx);
+  assert.ok(tapered[0] > tapered.at(-1) * 2, 'generation still tapers when no size is given');
+  // One value on every node is all "make them all the same size" takes.
+  store.apply(ids.map(id => ({ type: 'updateNode', id, size: 1 })));
+  const uniform = ids.map(id => store.graph.nodes.find(n => n.id === id)).map(n => ({ rx: labelExtent(n).rx, font: labelLayout(n, measure).font }));
+  assert.equal(new Set(uniform.map(u => u.rx)).size, 1, 'every blob is one size');
+  assert.equal(new Set(uniform.map(u => u.font)).size, 1, 'type follows the blob, not the depth');
+  // An explicit size renders exactly like the generation that would have produced it.
+  const asDepthOne = { text: 'Step 3 of s', depth: 6, size: .8 };
+  const atDepthOne = { text: 'Step 3 of s', depth: 1 };
+  assert.equal(labelExtent(asDepthOne).rx, labelExtent(atDepthOne).rx);
+  assert.equal(labelLayout(asDepthOne, measure).font.toFixed(6), labelLayout(atDepthOne, measure).font.toFixed(6));
+  assert.equal(nodeScale({ depth: 9 }).toFixed(2), '0.38');
+  assert.equal(nodeScale({ depth: 9, size: 1 }), 1);
+  // A size survives validation and a file roundtrip, and stays inside its range.
+  assert.equal(validateGraph(fromCanvas(toCanvas(store.graph))).nodes.find(n => n.id === 's5').size, 1);
   assert.throws(() => store.apply([{ type: 'addNode', id: 'huge', text: 'Too big', parent: root, size: 4 }]));
-  assert.throws(() => store.apply([{ type: 'updateNode', id: deep, size: 0.1 }]));
-  store.apply([{ type: 'addNode', id: 'sized', text: 'Big', parent: root, size: 2 }]);
-  assert.equal(store.graph.nodes.find(n => n.id === 'sized').size, 2);
+  assert.throws(() => store.apply([{ type: 'updateNode', id: 's5', size: 0.1 }]));
+});
+
+test('updateNode honours depth, and a misspelled field is an error', () => {
+  const store = new GraphStore(newGraph()); const root = store.graph.nodes[0].id;
+  store.apply([{ type: 'addNode', id: 'a', text: 'A', parent: root }]);
+  assert.equal(store.graph.nodes.find(n => n.id === 'a').depth, 1);
+  store.apply([{ type: 'updateNode', id: 'a', depth: 6 }]);
+  assert.equal(store.graph.nodes.find(n => n.id === 'a').depth, 6, 'depth must be applied, not dropped');
+  const revision = store.revision;
+  // Unknown keys used to vanish behind a success receipt.
+  for (const bad of [{ type: 'updateNode', id: 'a', lable: 'typo' }, { type: 'addNode', id: 'b', parent: root, scale: 2 }, { type: 'connect', source: root, target: 'a', text: 'no such field' }])
+    assert.throws(() => store.apply([bad]));
+  assert.equal(store.revision, revision, 'a rejected batch commits nothing');
 });
 
 test('a bigger blob still gets a free spot', () => {

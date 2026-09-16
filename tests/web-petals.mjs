@@ -54,10 +54,19 @@ try{
   await frame.locator('#edge-label').fill('Yes');
   await frame.locator('#edge-label').press('Enter');await saved();
   assert.equal(store.graph.edges.find(e=>e.id===ids[0]).label,'Yes');
-  await wait(async()=>await frame.locator(`[data-edge="${ids[0]}"] .edge-label`).evaluate(el=>el.textContent)==='Yes');
+  await wait(async()=>await frame.locator(`[data-edge-label="${ids[0]}"]`).evaluate(el=>el.textContent)==='Yes');
   const ends=await frame.locator(`[data-edge="${ids[0]}"] .edge`).evaluate(el=>{const p=el.getPointAtLength(el.getTotalLength()/2);return{x:p.x,y:p.y};});
-  const caption=await frame.locator(`[data-edge="${ids[0]}"] .edge-label`).evaluate(el=>({x:+el.getAttribute('x'),y:+el.getAttribute('y')}));
+  const caption=await frame.locator(`[data-edge-label="${ids[0]}"]`).evaluate(el=>({x:+el.getAttribute('x'),y:+el.getAttribute('y')}));
   assert.ok(Math.hypot(caption.x-ends.x,caption.y-ends.y)<26,'the label sits on the middle of its line');
+  // A label holds its size on screen however far the board is zoomed out.
+  const onScreen=async()=>frame.locator(`[data-edge-label="${ids[0]}"]`).evaluate(el=>parseFloat(getComputedStyle(el).fontSize)*el.getScreenCTM().a);
+  const atFull=await onScreen();
+  await frame.getByRole('button',{name:'Zoom out',exact:true}).click();
+  await wait(async()=>Math.abs(await onScreen()-atFull)<1.5);
+  await frame.locator('#zoom-value').click();
+  // Clicking the label selects its connection and opens the name for editing.
+  await frame.locator(`[data-edge-label="${ids[0]}"]`).click();
+  await wait(async()=>await frame.locator('#edge-label').evaluate(el=>el===document.activeElement));
   await frame.locator('#edge-label').fill('');await frame.locator('#edge-label').press('Enter');await saved();
   assert.equal('label' in store.graph.edges.find(e=>e.id===ids[0]),false);
   console.log('PASS: connection labels save from the toolbar, render at the midpoint and clear again');
@@ -66,11 +75,12 @@ try{
   await clickNode('a');
   const width=async()=>(await node('a').locator('.bubble-shape').boundingBox()).width;
   const before=await width();
+  // Size is absolute: a depth-1 blob sits at 0.8, so one step up lands on a root-sized 1.
   await frame.getByRole('button',{name:'Make bigger',exact:true}).click();await saved();
-  assert.equal(store.graph.nodes.find(n=>n.id==='a').size,1.25);
+  assert.equal(store.graph.nodes.find(n=>n.id==='a').size,1);
   await wait(async()=>await width()>before*1.2);
   await frame.getByRole('button',{name:'Make smaller',exact:true}).click();await saved();
-  assert.equal(store.graph.nodes.find(n=>n.id==='a').size,1);
+  assert.equal(store.graph.nodes.find(n=>n.id==='a').size,0.8);
   await wait(async()=>Math.abs(await width()-before)<2);
   // The limits hold, and a refused change makes no revision.
   for(let i=0;i<12;i++){await frame.getByRole('button',{name:'Make bigger',exact:true}).click();await new Promise(r=>setTimeout(r,60));}
@@ -79,6 +89,10 @@ try{
   await frame.getByRole('button',{name:'Make bigger',exact:true}).click();
   await wait(async()=>(await frame.locator('#toast').innerText()).includes('largest'));
   assert.equal(store.revision,settled,'a refused resize writes nothing');
+  // Leave the blob and the view as the next checks expect to find them.
+  while(store.graph.nodes.find(n=>n.id==='a').size>0.8){await frame.getByRole('button',{name:'Make smaller',exact:true}).click();await new Promise(r=>setTimeout(r,60));}
+  await saved();
+  await frame.getByRole('button',{name:'Fit board to view',exact:true}).click();
   console.log('PASS: grow and shrink a selected blob, with clamped limits and no empty commits');
   const outlineChecks=await frame.locator('body').evaluate(async()=>{
     const {blobOutline,outlineDistance}=await import('/canvas/outline.js');

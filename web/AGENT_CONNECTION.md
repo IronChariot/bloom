@@ -166,9 +166,15 @@ Screenshots remain optional with the existing freshness/retry guidance. A bounde
 
 Automatic placement no longer stacks blobs. Previously the position came from the parent and the sibling index alone, so two branches of equal generation could resolve to identical coordinates and hide each other. `addNode` without `x`/`y` now searches outward from its parent and takes the first position whose blob touches nothing, widening the ring for larger blobs. Supplying `x` or `y` still places the node exactly there, without the check.
 
-Connections carry an optional `label` of up to 80 characters, drawn at the middle of the line. Pass it to `connect`, `updateEdge` or `styleEdges`; an empty string removes it. A label names the branch itself, so a decision tree no longer has to bake "NO →" into the destination node's text. People edit the same labels in the connection toolbar.
+Connections carry an optional `label` of up to 80 characters, drawn at the middle of the line. Labels hold a constant size on screen at any zoom, and paint above the blobs, so they stay legible on a wide diagram that fits at 37 per cent. Clicking a label selects its connection and opens its name for editing. Pass it to `connect`, `updateEdge` or `styleEdges`; an empty string removes it. A label names the branch itself, so a decision tree no longer has to bake "NO →" into the destination node's text. People edit the same labels in the connection toolbar.
 
-Nodes carry an optional `size` from 0.4 to 3 on `addNode` and `updateNode`. It multiplies the scale that the generation would give, so a twelve-step chain can render at one size without reparenting nodes to flatten their depth. People use the **Make bigger** and **Make smaller** buttons on a selected blob, which step by 1.25 and clamp to the same range. Size appears in `includeLayout` reads and in file exports.
+Nodes carry an optional `size` from 0.35 to 3 on `addNode` and `updateNode`. It is the blob's **absolute** scale: it replaces the generation taper instead of multiplying it. Size 1 always renders a root-sized blob, whatever the depth, so `size: 1` on every node makes a whole chain uniform in one value. Without a size, the scale is `max(0.38, 0.8 ** depth)` and the type tapers with it; an explicit size puts the blob on that same curve, so `size: 0.8` looks exactly like an untouched depth-1 blob. Type follows the blob, so equally sized blobs also read at one type size.
+
+Size never moves a node. With explicit `x`/`y`, spacing is exactly what you set, and only automatic placement widens its search to fit a larger blob. The **visible** line between two blobs does change with size, because a line stops at the blob's outline: shrink the blobs and the gap between them grows, with no coordinate touched.
+
+People use the **Make bigger** and **Make smaller** buttons on a selected blob, which step by 1.25 from whatever size it currently renders at, explicit or inherited, and clamp to the same range. Size appears in `includeLayout` reads and in file exports.
+
+`updateNode` accepts `depth` as well, which previously vanished behind a success receipt. Operations are now strict: an unknown or misspelled field, or a server-assigned one such as a comment's `author`, is rejected rather than silently dropped.
 
 An agent cannot see the canvas, and `get_board_image` still needs a human with the board open. Two checks now work without one:
 

@@ -3,7 +3,7 @@ import { displayName } from './attribution.js';
 import { blobOutline, outlineDistance } from './outline.js';
 import { createPetals } from './petals.js';
 import { colorShades } from './color-shades.js';
-import { labelLayout, MIN_NODE_SIZE, MAX_NODE_SIZE } from './label-layout.js';
+import { labelLayout, nodeScale, MIN_NODE_SIZE, MAX_NODE_SIZE } from './label-layout.js';
 import { createDeformation, stepDeformation } from './deformation.js';
 import { boardKey, withPendingEdits } from './pending-edits.js';
 const api = window.bloom;
@@ -20,12 +20,12 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 const colors = ['#ffffff', '#8675ef', '#f3af47', '#4bbda0', '#ed7d9c', '#64a7e5'];
 document.querySelector('#app').innerHTML = `
  <header class="topbar"><div class="header-left"><div class="brand"><img src="assets/icon.svg" alt="">bloom</div><div class="divider"></div><button class="file-button" id="file-toggle" title="File menu" aria-label="File menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><span id="save-status" class="save-status">Recovered locally</span></div><div class="board-heading"><span class="board-heading-label">Current Board:</span><button type="button" id="board-title" class="board-title" aria-label="Rename board"></button><input id="board-title-input" class="board-title-input hidden" aria-label="Board name" maxlength="200" autocomplete="off"/></div><div class="header-right"><button class="file-button" data-command="open" title="Upload board · Replace current contents · Undo available" aria-label="Upload board">${icon('upload')}</button><button class="file-button" data-command="save" title="Download board · Ctrl S" aria-label="Download board">${icon('download')}</button><div class="divider"></div><button class="share-button" id="session-toggle">${icon('agent')}<span class="session-label">Agent session</span><span class="session-indicator"></span></button></div></header>
- <main class="board" id="board" aria-label="Brainstorm whiteboard"><svg id="canvas" role="application" aria-label="Interactive brainstorm canvas" tabindex="0"><defs><filter id="bubble-shadow" x="-35%" y="-35%" width="170%" height="180%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#59647f" flood-opacity=".07"/></filter><marker id="arrow-end" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="m2 2 6 3-6 3" fill="none" stroke="#aeb5c5" stroke-width="1.4"/></marker></defs><g id="world"><g id="petals"></g><g id="edges"></g><g id="nodes"></g></g></svg></main>
+ <main class="board" id="board" aria-label="Brainstorm whiteboard"><svg id="canvas" role="application" aria-label="Interactive brainstorm canvas" tabindex="0"><defs><filter id="bubble-shadow" x="-35%" y="-35%" width="170%" height="180%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#59647f" flood-opacity=".07"/></filter><marker id="arrow-end" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="m2 2 6 3-6 3" fill="none" stroke="#aeb5c5" stroke-width="1.4"/></marker></defs><g id="world"><g id="petals"></g><g id="edges"></g><g id="nodes"></g><g id="edge-labels"></g></g></svg></main>
  <nav class="toolbar" aria-label="Whiteboard tools"><button class="tool active" data-tool="select" title="Select · V" aria-label="Select tool">${icon('pointer')}</button><button class="tool" data-tool="add" title="Add idea · N" aria-label="Add idea tool">${icon('plus')}</button><button class="tool" data-tool="hand" title="Pan · H or hold Space" aria-label="Pan tool">${icon('hand')}</button><div class="tool-separator"></div><button class="tool" data-command="undo" title="Undo · Ctrl Z" aria-label="Undo">${icon('undo')}</button><button class="tool" data-command="redo" title="Redo · Ctrl Shift Z" aria-label="Redo">${icon('redo')}</button><div class="tool-separator"></div><button class="tool" id="tidy" title="Give overlapping ideas some room" aria-label="Space out ideas">${icon('spark')}</button></nav>
  <div class="bottom-left"><button class="help-button" id="help-toggle" title="How to use Bloom" aria-label="Help">?</button></div><div class="bottom-hint"><b>Double-click</b> to grow an idea <span style="padding:0 12px;color:#ccd0d8">/</span> drag the canvas to wander</div><div class="zoom-bar"><button id="zoom-out" aria-label="Zoom out">${icon('minus')}</button><button class="zoom-value" id="zoom-value" title="Reset zoom">100%</button><button id="zoom-in" aria-label="Zoom in">${icon('plus')}</button><div class="zoom-sep"></div><button id="fit" aria-label="Fit board to view" title="Fit board · F">${icon('fit')}</button></div>
  <div class="selection-actions hidden" id="selection-actions"></div><div id="panels"></div><div id="toast" class="toast hidden" role="status"></div><div id="connector-picker" class="connector-picker hidden"></div><div id="empty" class="empty hidden"></div>`;
 
-const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), petalsLayer = document.querySelector('#petals'), edgesLayer = document.querySelector('#edges'), panels = document.querySelector('#panels');
+const board = document.querySelector('#board'), svg = document.querySelector('#canvas'), world = document.querySelector('#world'), nodesLayer = document.querySelector('#nodes'), petalsLayer = document.querySelector('#petals'), edgesLayer = document.querySelector('#edges'), edgeLabelsLayer = document.querySelector('#edge-labels'), panels = document.querySelector('#panels');
 let state, selected = new Set(), selectedEdges = new Set(), tool = 'select', view = { x: innerWidth / 2, y: (innerHeight - 76) / 2 - 25, zoom: 1 }, physical = new Map(), drag = null, pan = null, space = false, editor = null, editTimer, toastTimer, openPanel = null, busy = Promise.resolve(), clipboardCache = null, activeTarget = null, chosenStyle = null, sessionInfo = null, first = true, lastNodeClick = null, consumedDoubleClick = 0;
 let shadeHold = null, shadeMenu = null, suppressedColor = null, suppressedUntil = 0;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -123,13 +123,14 @@ function update(next) {
   if (openPanel === 'session') renderSession();
 }
 function renderGraph() {
-  if (!state.graph) { nodesLayer.innerHTML = ''; edgesLayer.innerHTML = ''; petalsLayer.innerHTML = ''; return; }
+  if (!state.graph) { nodesLayer.innerHTML = ''; edgesLayer.innerHTML = ''; petalsLayer.innerHTML = ''; edgeLabelsLayer.innerHTML = ''; return; }
   nodesLayer.innerHTML = state.graph.nodes.map(n => {
     const r = radius(n), { font, lines } = label(n), p = physical.get(n.id);
     return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
   }).join('');
   petalsLayer.innerHTML = state.graph.nodes.map(n => `<g data-petal-node="${esc(n.id)}">${petalUI.render(n)}</g>`).join('');
-  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/>${e.label ? `<text class="edge-label">${esc(e.label)}</text>` : ''}</g>`).join('');
+  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
+  edgeLabelsLayer.innerHTML = state.graph.edges.filter(e => e.label).map(e => `<text class="edge-label${selectedEdges.has(e.id) ? ' selected' : ''}" data-edge-label="${esc(e.id)}">${esc(e.label)}</text>`).join('');
   renderPresence(performance.now(), true);
 }
 function blob(rx, ry, t, wobble, seed, extra = 0, shape = null, grab = null) {
@@ -172,7 +173,7 @@ function frame(now) {
       const el = edgesLayer.querySelector(`[data-edge="${CSS.escape(e.id)}"]`); if (!el) continue;
       for (const path of el.querySelectorAll('path')) path.setAttribute('d', `M${x1},${y1} C${x1 + dx * .24},${y1 + dy * .12} ${x2 - dx * .24},${y2 - dy * .12} ${x2},${y2}`);
       // This curve's midpoint is the average of its ends, because the handles are symmetric.
-      const caption = el.querySelector('.edge-label');
+      const caption = edgeLabelsLayer.querySelector(`[data-edge-label="${CSS.escape(e.id)}"]`);
       if (caption) { caption.setAttribute('x', (x1 + x2) / 2); caption.setAttribute('y', (y1 + y2) / 2); }
     }
     if (editor) positionEditor();
@@ -181,7 +182,7 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-function setView() { world.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.zoom})`); board.style.backgroundSize = `${24 * view.zoom}px ${24 * view.zoom}px`; board.style.backgroundPosition = `${view.x}px ${view.y}px`; document.querySelector('#zoom-value').textContent = `${Math.round(view.zoom * 100)}%`; api.viewport({ ...view, width: innerWidth, height: innerHeight - 76 }); }
+function setView() { world.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.zoom})`); edgeLabelsLayer.style.setProperty('--edge-label-scale', 1 / view.zoom); board.style.backgroundSize = `${24 * view.zoom}px ${24 * view.zoom}px`; board.style.backgroundPosition = `${view.x}px ${view.y}px`; document.querySelector('#zoom-value').textContent = `${Math.round(view.zoom * 100)}%`; api.viewport({ ...view, width: innerWidth, height: innerHeight - 76 }); }
 function zoom(factor, x = innerWidth / 2, y = (innerHeight + 76) / 2) { const p = clientToWorld(x, y); view.zoom = Math.max(.18, Math.min(2.5, view.zoom * factor)); view.x = x - p.x * view.zoom; view.y = y - 76 - p.y * view.zoom; setView(); }
 function fit() {
   const ns = state?.graph?.nodes; if (!ns?.length) { view = { x: innerWidth / 2, y: (innerHeight - 76) / 2, zoom: 1 }; setView(); return; }
@@ -199,8 +200,8 @@ function restoreLabelDraft(draft) {
 function resizeSelection(direction) {
   const clamp = value => Math.max(MIN_NODE_SIZE, Math.min(MAX_NODE_SIZE, Math.round(value * 1000) / 1000));
   const ops = [...selected].map(id => nodeById(id)).filter(Boolean)
-    .map(n => ({ node: n, size: clamp((n.size ?? 1) * (direction === 'grow' ? 1.25 : .8)) }))
-    .filter(({ node, size }) => size !== (node.size ?? 1))
+    .map(n => ({ node: n, size: clamp(nodeScale(n) * (direction === 'grow' ? 1.25 : .8)) }))
+    .filter(({ node, size }) => size !== nodeScale(node))
     .map(({ node, size }) => ({ type: 'updateNode', id: node.id, size }));
   if (!ops.length) { toast(direction === 'grow' ? 'Already the largest size.' : 'Already the smallest size.'); return; }
   for (const op of ops) { labelCache.delete(nodeById(op.id)); const p = physical.get(op.id); if (p) p.wobble = 1; }
@@ -342,10 +343,16 @@ function finishEdit(commit = true) {
 
 board.addEventListener('dblclick', e => { if (e.button !== 0) return; clearTimeout(editTimer); if (tool === 'hand' || space || performance.now() - consumedDoubleClick < 500) return; e.preventDefault(); const id = e.target.closest('[data-node]')?.dataset.node; if (id) return; const p = clientToWorld(e.clientX, e.clientY); addNode(p.x, p.y); });
 board.addEventListener('pointerdown', e => {
-  if (![0, 1].includes(e.button) || !state?.graph) return; clearTimeout(editTimer); closePanel(); const id = e.target.closest('[data-node]')?.dataset.node, edge = e.target.closest('[data-edge]')?.dataset.edge;
+  if (![0, 1].includes(e.button) || !state?.graph) return; clearTimeout(editTimer); closePanel(); const id = e.target.closest('[data-node]')?.dataset.node, edge = e.target.closest('[data-edge]')?.dataset.edge || e.target.closest('[data-edge-label]')?.dataset.edgeLabel;
   if (e.button === 1 || space || tool === 'hand' || (!id && !edge && tool !== 'add')) { finishEdit(); pan = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; board.setPointerCapture(e.pointerId); board.classList.add('panning'); e.preventDefault(); return; }
   if (tool === 'add') { const p = clientToWorld(e.clientX, e.clientY); addNode(p.x, p.y, id); e.preventDefault(); return; }
-  if (edge) { finishEdit(); selected.clear(); if (!(e.ctrlKey || e.metaKey || e.shiftKey)) selectedEdges.clear(); if ((e.ctrlKey || e.metaKey || e.shiftKey) && selectedEdges.has(edge)) selectedEdges.delete(edge); else selectedEdges.add(edge); renderGraph(); renderSelection(); return; }
+  if (edge) {
+    finishEdit(); selected.clear(); if (!(e.ctrlKey || e.metaKey || e.shiftKey)) selectedEdges.clear();
+    if ((e.ctrlKey || e.metaKey || e.shiftKey) && selectedEdges.has(edge)) selectedEdges.delete(edge); else selectedEdges.add(edge);
+    renderGraph(); renderSelection();
+    if (e.target.closest('[data-edge-label]') && selectedEdges.size === 1) setTimeout(() => { const field = document.querySelector('#edge-label'); field?.focus(); field?.select(); }, 0);
+    return;
+  }
   if (id) {
     finishEdit(); const n = nodeById(id), p = physical.get(id); const wasSelected = selected.has(id); if (!wasSelected || e.shiftKey || e.ctrlKey || e.metaKey) select(id, e.shiftKey || e.ctrlKey || e.metaKey); else { selectedEdges.clear(); renderSelection(); }
     if (!selected.has(id)) { e.preventDefault(); return; }
@@ -399,8 +406,8 @@ async function copy() {
 async function paste() {
   if (!state.graph) return;
   try { const raw = await api.command('pasteNodes'), data = JSON.parse(raw || clipboardCache || 'null'); if (data?.format !== 'bloom-clipboard' || !Array.isArray(data.nodes) || data.nodes.length > 100) { toast('Copy some ideas first.'); return; }
-    const map = new Map(data.nodes.map(n => [n.id, uid()])); const ops = data.nodes.map(n => ({ type: 'addNode', id: map.get(n.id), text: n.text, x: n.x + 55, y: n.y + 55, color: n.color, depth: n.depth ?? 1 }));
-    for (const e of data.edges || []) if (map.has(e.source) && map.has(e.target)) ops.push({ type: 'connect', source: map.get(e.source), target: map.get(e.target), style: e.type, pattern: e.pattern });
+    const map = new Map(data.nodes.map(n => [n.id, uid()])); const ops = data.nodes.map(n => ({ type: 'addNode', id: map.get(n.id), text: n.text, x: n.x + 55, y: n.y + 55, color: n.color, depth: n.depth ?? 1, ...(n.size !== undefined ? { size: n.size } : {}) }));
+    for (const e of data.edges || []) if (map.has(e.source) && map.has(e.target)) ops.push({ type: 'connect', source: map.get(e.source), target: map.get(e.target), style: e.type, ...(e.pattern ? { pattern: e.pattern } : {}), ...(e.label ? { label: e.label } : {}) });
     for (const n of data.nodes) for (const p of n.petals || []) ops.push({ type: 'addPetal', nodeId: map.get(n.id), kind: p.kind, color: p.color, emoji: p.emoji, comment: p.comment });
     if (ops.length > 200) { toast('Copy fewer ideas at once when they have many petals.'); return; }
     apply(ops, () => { selected = new Set(map.values()); renderGraph(); renderSelection(); });

@@ -36,10 +36,15 @@ export function wrapLabel(text, width, measure, splitWords = true) {
 }
 
 export const MIN_LABEL_FONT = 8;
-export const MIN_NODE_SIZE = .4, MAX_NODE_SIZE = 3;
-// Generation sets a default size; an explicit size overrides it without changing the tree.
+export const MIN_NODE_SIZE = .35, MAX_NODE_SIZE = 3;
+const FONT_EXPONENT = Math.log(.91) / Math.log(.8);
+// Generation tapers a blob by default. An explicit size replaces that taper outright, so
+// size 1 is always a root-sized blob and "every blob the same size" is one value everywhere.
+export function generationScale(node) {
+  return Math.max(.38, .8 ** (node.root ? 0 : node.depth ?? 1));
+}
 export function nodeScale(node) {
-  return Math.max(.38, .8 ** (node.root ? 0 : node.depth ?? 1)) * (node.size ?? 1);
+  return node.size ?? generationScale(node);
 }
 // Text is not measured here, so the server can predict a blob's footprint too.
 export function labelExtent(node) {
@@ -49,7 +54,9 @@ export function labelExtent(node) {
 }
 export function labelLayout(node, measureText) {
   const depth = node.root ? 0 : node.depth ?? 1;
-  const nominalFont = Math.max(12, 22 * .91 ** depth) * (node.size ?? 1);
+  // Type follows the blob, not the generation, so equally sized blobs also read at one size.
+  // The exponent makes an explicit size land on the same curve the default taper follows.
+  const nominalFont = node.size === undefined ? Math.max(12, 22 * .91 ** depth) : Math.max(12, 22 * node.size ** FONT_EXPONENT);
   const text = node.text || ' ';
   const { rx, ry } = labelExtent(node);
   let font = nominalFont, lines;
