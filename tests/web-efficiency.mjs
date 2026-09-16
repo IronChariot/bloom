@@ -10,7 +10,10 @@ import { limitHistory, HISTORY_BYTES } from '../web/lib/history.js';
 const source = (await fs.readFile('web/public/canvas/bridge.js', 'utf8')).replace(/^import .*;\r?\n/gm, '');
 let now = 100000, nextTimer = 0, calls = [], timers = new Map(), listeners = {}, fail = false;
 const fakeDocument = { hidden: false, querySelector: () => null, addEventListener: (name, fn) => { listeners[name] = fn; } };
+// The stripped imports leave the presence client undefined; this scheduler test does not exercise it.
+const collaborationStub = { sessionId: 'test-session', start() {}, select() {}, async acquire() {}, async release() {}, async leave() {} };
 const sandbox = { URL, Date: class extends Date { static now() { return now; } }, console, document: fakeDocument,
+  createPresenceClient: () => collaborationStub,
   window: { parent: { location: { href: 'https://example.test/' } }, addEventListener: (name, fn) => { listeners[name] = fn; } },
   setTimeout: (fn, delay) => { const id = ++nextTimer; timers.set(id, { fn, delay }); return id; }, clearTimeout: id => timers.delete(id),
   fetch: async (path, options) => { calls.push({ path, options }); if (fail) throw Error('offline'); return { ok: true, json: async () => ({ revision: 0, members: [], agentEnabled: true }) }; }

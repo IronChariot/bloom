@@ -29,6 +29,15 @@ export async function attributionNames(db, graph) {
   return names;
 }
 
+// Who committed each revision after a cursor, so an agent can see a revert it did not make.
+export async function changeLog(db, boardId, sinceRevision) {
+  const rows = await db.prepare(`SELECT c.revision + 1 AS revision, c.actor AS actorId,
+    COALESCE(p.display_name, CASE WHEN substr(c.actor, 1, 6) = 'email:' THEN substr(c.actor, 7) ELSE c.actor END) AS actor,
+    c.kind, c.at FROM changes c LEFT JOIN profiles p
+    ON p.user_id = CASE WHEN instr(c.actor, '@') > 0 AND substr(c.actor, 1, 6) != 'email:' THEN 'email:' || c.actor ELSE c.actor END
+    WHERE c.board_id = ? AND c.revision >= ? ORDER BY c.revision LIMIT 50`).bind(boardId, sinceRevision).all();
+  return rows.results;
+}
 export async function boardActivity(db, boardId) {
   const rows = await db.prepare(`SELECT c.actor AS actorId,
     COALESCE(p.display_name, CASE WHEN substr(c.actor, 1, 6) = 'email:' THEN substr(c.actor, 7) ELSE c.actor END) AS actor,

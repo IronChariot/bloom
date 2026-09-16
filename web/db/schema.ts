@@ -5,8 +5,8 @@ export const boards = sqliteTable('boards', {
 export const members = sqliteTable('members', { boardId: text('board_id').notNull().references(() => boards.id), userId: text('user_id').notNull(), name: text('name').notNull(), role: text('role').notNull(), seen: integer('seen').notNull() }, t => [primaryKey({ columns: [t.boardId, t.userId] }), index('members_user').on(t.userId)]);
 export const changes = sqliteTable('changes', { boardId: text('board_id').notNull().references(() => boards.id), revision: integer('revision').notNull(), graph: text('graph').notNull(), actor: text('actor').notNull(), at: integer('at').notNull(), kind: text('kind').notNull() }, t => [primaryKey({ columns: [t.boardId, t.revision] })]);
 
-export const agentConnections = sqliteTable('agent_connections', { owner: text('owner').primaryKey(), tokenHash: text('token_hash').notNull().unique(), created: integer('created').notNull() });
-export const agentGrants = sqliteTable('agent_grants', { owner: text('owner').notNull().references(() => agentConnections.owner), boardId: text('board_id').notNull().references(() => boards.id), agentHash: text('agent_hash').notNull() }, t => [primaryKey({ columns: [t.owner, t.boardId] })]);
+export const agentConnections = sqliteTable('agent_connections', { id: text('id').primaryKey(), owner: text('owner').notNull(), label: text('label').notNull(), tokenHash: text('token_hash').notNull().unique(), created: integer('created').notNull(), used: integer('used') }, t => [index('agent_connections_owner').on(t.owner)]);
+export const agentGrants = sqliteTable('agent_grants', { owner: text('owner').notNull(), boardId: text('board_id').notNull().references(() => boards.id), agentHash: text('agent_hash').notNull() }, t => [primaryKey({ columns: [t.owner, t.boardId] })]);
 
 export const profiles = sqliteTable('profiles', { userId: text('user_id').primaryKey(), displayName: text('display_name').notNull() });
 

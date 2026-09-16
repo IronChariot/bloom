@@ -1,4 +1,5 @@
 import { arrangePetals } from '../public/canvas/petal-model.js';
+import { labelExtent, MIN_NODE_SIZE, MAX_NODE_SIZE } from '../public/canvas/label-layout.js';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 
@@ -11,26 +12,68 @@ export const petalSchema = z.object({ id, slot: z.number().int().min(0).max(7), 
   emoji: z.string().min(1).max(32).optional(), comment: z.string().trim().min(1).max(4000).optional(),
   author: z.string().max(320).optional(), createdAt: z.number().int().nonnegative().optional(), updatedBy: z.string().max(320).optional(), updatedAt: z.number().int().nonnegative().optional()
 }).superRefine((p, ctx) => { if ((p.kind === 'comment' && !p.comment) || (p.kind === 'emoji' && !p.emoji)) ctx.addIssue({ code: 'custom', message: 'A petal needs its comment or emoticon.' }); });
-export const nodeSchema = z.object({ id, text: z.string().max(2000), x: coord, y: coord, color: z.string().regex(/^#[0-9a-fA-F]{6}$/), petals: z.array(petalSchema).max(8).optional(), root: z.boolean().optional(), depth: z.number().int().min(0).max(1000).optional() });
-export const edgeSchema = z.object({ id, source: id, target: id, type: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']), pattern: z.enum(['solid', 'dotted']).optional() });
+const sizeSchema = z.number().finite().min(MIN_NODE_SIZE).max(MAX_NODE_SIZE);
+const labelSchema = z.string().max(80);
+export const nodeSchema = z.object({ id, text: z.string().max(2000), x: coord, y: coord, color: z.string().regex(/^#[0-9a-fA-F]{6}$/), petals: z.array(petalSchema).max(8).optional(), root: z.boolean().optional(), depth: z.number().int().min(0).max(1000).optional(), size: sizeSchema.optional() });
+export const edgeSchema = z.object({ id, source: id, target: id, type: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']), pattern: z.enum(['solid', 'dotted']).optional(), label: labelSchema.optional() });
 export const graphSchema = z.object({ format: z.literal('bloom'), version: z.literal(1), title: z.string().min(1).max(200), nodes: z.array(nodeSchema).max(1000), edges: z.array(edgeSchema).max(3000) });
-export const operationSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('addNode'), id: id.optional(), text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), parent: id.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), depth: z.number().int().min(0).max(1000).optional() }),
-  z.object({ type: z.literal('updateNode'), id, text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), before: z.object({ text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional() }).optional() }),
+const operationVariants = [
+  z.object({ type: z.literal('addNode'), id: id.optional(), text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), parent: id.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), depth: z.number().int().min(0).max(1000).optional(), size: sizeSchema.optional() }),
+  z.object({ type: z.literal('updateNode'), id, text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), size: sizeSchema.optional(), depth: z.number().int().min(0).max(1000).optional(), before: z.object({ text: z.string().max(2000).optional(), x: coord.optional(), y: coord.optional() }).optional() }),
   z.object({ type: z.literal('deleteNodes'), ids: z.array(id).min(1).max(1000) }),
-  z.object({ type: z.literal('connect'), source: id, target: id, style: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']).default('line'), pattern: z.enum(['solid', 'dotted']).optional() }),
+  z.object({ type: z.literal('connect'), source: id, target: id, style: z.enum(['line', 'arrow', 'reverse', 'both', 'dotted']).default('line'), pattern: z.enum(['solid', 'dotted']).optional(), label: labelSchema.optional() }),
   z.object({ type: z.literal('colorNodes'), ids: z.array(id).min(1).max(1000), color: colorSchema }),
-  z.object({ type: z.literal('styleEdges'), ids: z.array(id).min(1).max(3000), pattern: z.enum(['solid', 'dotted']).optional(), arrows: z.enum(['none', 'arrow', 'reverse', 'both']).optional() }),
+  z.object({ type: z.literal('styleEdges'), ids: z.array(id).min(1).max(3000), pattern: z.enum(['solid', 'dotted']).optional(), arrows: z.enum(['none', 'arrow', 'reverse', 'both']).optional(), label: labelSchema.optional() }),
   z.object({ type: z.literal('deleteEdges'), ids: z.array(id).min(1).max(3000) }),
-  z.object({ type: z.literal('updateEdge'), id, pattern: z.enum(['solid', 'dotted']).optional(), arrows: z.enum(['none', 'arrow', 'reverse', 'both']).optional() }),
+  z.object({ type: z.literal('updateEdge'), id, pattern: z.enum(['solid', 'dotted']).optional(), arrows: z.enum(['none', 'arrow', 'reverse', 'both']).optional(), label: labelSchema.optional() }),
   z.object({ type: z.literal('addPetal'), nodeId: id, id: id.optional(), kind: petalKind, color: colorSchema.optional(), emoji: z.string().min(1).max(32).optional(), comment: z.string().trim().min(1).max(4000).optional() }),
   z.object({ type: z.literal('updatePetal'), nodeId: id, id, beforeComment: z.string().max(4000).optional(), color: colorSchema.optional(), kind: petalKind.optional(), emoji: z.string().min(1).max(32).optional(), comment: z.string().trim().min(1).max(4000).optional() }),
   z.object({ type: z.literal('deletePetal'), nodeId: id, id }),
   z.object({ type: z.literal('movePetal'), nodeId: id, id, slot: z.number().int().min(0).max(7) }),
   z.object({ type: z.literal('deleteEdge'), id }),
   z.object({ type: z.literal('rename'), title: z.string().min(1).max(200) })
-]);
+];
+// Strict: an unknown or misspelled field is an error, never a silently dropped instruction.
+export const operationSchema = z.discriminatedUnion('type', operationVariants.map(variant => variant.strict()));
 
+const GOLDEN_ANGLE = 2.39996, PLACEMENT_GAP = 26;
+const clampCoord = value => Math.max(-100000, Math.min(100000, value));
+// Two blobs collide when their bounding boxes meet. Ellipse extents come from the shared layout rule.
+export function nodesOverlap(a, b, gap = PLACEMENT_GAP) {
+  const ea = labelExtent(a), eb = labelExtent(b);
+  return Math.abs(a.x - b.x) < ea.rx + eb.rx + gap && Math.abs(a.y - b.y) < ea.ry + eb.ry + gap;
+}
+// Automatic placement must not stack blobs: two branches at the same generation used to
+// resolve to identical coordinates, which made nodes invisible and unclickable.
+export function freePosition(nodes, candidate, origin, index) {
+  // Big blobs need wide rings: start clear of the parent and widen with the blob's own size.
+  const extent = labelExtent(candidate);
+  const base = Math.max(240, extent.rx + (origin.rx ?? 0) + PLACEMENT_GAP * 2);
+  const step = Math.max(120, extent.rx * .9);
+  let best = null;
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const angle = (index + attempt) * GOLDEN_ANGLE, distance = base + Math.floor(attempt / 8) * step;
+    const placed = { ...candidate, x: clampCoord(origin.x + Math.cos(angle) * distance), y: clampCoord(origin.y + Math.sin(angle) * distance) };
+    const clearance = Math.min(Infinity, ...nodes.map(n => {
+      const ea = labelExtent(placed), eb = labelExtent(n);
+      return Math.max(Math.abs(placed.x - n.x) - (ea.rx + eb.rx), Math.abs(placed.y - n.y) - (ea.ry + eb.ry));
+    }));
+    if (clearance >= PLACEMENT_GAP) return { x: placed.x, y: placed.y };
+    if (!best || clearance > best.clearance) best = { x: placed.x, y: placed.y, clearance };
+  }
+  return { x: best.x, y: best.y };
+}
+// An agent cannot see the canvas. Overlapping blobs are the one rendering fault that is
+// exactly computable from the graph, so report them instead of guessing at a picture.
+export function layoutOverlaps(nodes, limit = 50) {
+  const boxes = nodes.map(n => ({ id: n.id, x: n.x, y: n.y, ...labelExtent(n) }));
+  const found = [];
+  for (let i = 0; i < boxes.length && found.length < limit; i++) for (let j = i + 1; j < boxes.length && found.length < limit; j++) {
+    const a = boxes[i], b = boxes[j];
+    if (Math.abs(a.x - b.x) < a.rx + b.rx && Math.abs(a.y - b.y) < a.ry + b.ry) found.push({ nodeIds: [a.id, b.id], identical: a.x === b.x && a.y === b.y });
+  }
+  return found;
+}
 export function mixColors(colors) {
   return '#' + [1, 3, 5].map(i => Math.round(colors.reduce((a, c) => a + parseInt(c.slice(i, i + 2), 16), 0) / colors.length).toString(16).padStart(2, '0')).join('');
 }
@@ -66,6 +109,8 @@ export function newGraph(demo = false) {
   }
   return validateGraph(graph);
 }
+// An empty label removes it, so a client can clear one without a delete operation.
+function setEdgeLabel(edge, label) { const value = label.trim(); if (value) edge.label = value; else delete edge.label; }
 export class GraphStore {
   constructor(graph = newGraph(true), onChange = () => {}) { this.graph = validateGraph(graph); this.revision = 0; this.past = []; this.future = []; this.onChange = onChange; this.activity = []; }
   snapshot() { return { graph: structuredClone(this.graph), revision: this.revision, canUndo: !!this.past.length, canRedo: !!this.future.length, activity: this.activity.slice(-12) }; }
@@ -90,19 +135,24 @@ export class GraphStore {
         const angle = siblings * 2.39996;
         const color = op.color || (parent && !parent.root ? mixColors([parent.color, parent.color, '#ffffff']) : palette[siblings % palette.length]);
         const nid = op.id || randomUUID(); if (g.nodes.some(n => n.id === nid)) throw new Error('Node ID already exists.');
-        g.nodes.push({ id: nid, text: op.text ?? 'New idea', x: op.x ?? (parent?.x ?? 0) + Math.cos(angle) * 240, y: op.y ?? (parent?.y ?? 0) + Math.sin(angle) * 240, color, depth: parent ? Math.min(1000, parent.depth + 1) : op.depth ?? 1 });
+        const node = { id: nid, text: op.text ?? 'New idea', color, depth: parent ? Math.min(1000, parent.depth + 1) : op.depth ?? 1, ...(op.size !== undefined ? { size: op.size } : {}) };
+        // Explicit coordinates win; otherwise find a spot that touches nothing.
+        const spot = op.x !== undefined || op.y !== undefined
+          ? { x: op.x ?? (parent?.x ?? 0) + Math.cos(angle) * 240, y: op.y ?? (parent?.y ?? 0) + Math.sin(angle) * 240 }
+          : freePosition(g.nodes, node, { x: parent?.x ?? 0, y: parent?.y ?? 0, rx: parent ? labelExtent(parent).rx : 0 }, siblings);
+        g.nodes.push({ ...node, x: spot.x, y: spot.y });
         if (parent) g.edges.push({ id: randomUUID(), source: parent.id, target: nid, type: 'arrow' });
       } else if (op.type === 'updateNode') {
         const n = find(op.id);
         for (const [key, value] of Object.entries(op.before || {})) if (n[key] !== value) throw new Error('This idea changed while you were editing. Review the latest version and try again.');
-        for (const key of ['text', 'x', 'y', 'color']) if (op[key] !== undefined) n[key] = op[key];
+        for (const key of ['text', 'x', 'y', 'color', 'size', 'depth']) if (op[key] !== undefined) n[key] = op[key];
       } else if (op.type === 'deleteNodes') {
         op.ids.forEach(find); g.nodes = g.nodes.filter(n => !op.ids.includes(n.id)); g.edges = g.edges.filter(e => !op.ids.includes(e.source) && !op.ids.includes(e.target));
       } else if (op.type === 'connect') {
         find(op.source); find(op.target); if (op.source === op.target) throw new Error('Choose two different nodes.');
         const existing = g.edges.find(e => e.source === op.source && e.target === op.target);
-        if (existing) { existing.type = op.style; if (op.pattern || existing.pattern) existing.pattern = op.pattern ?? (op.style === 'dotted' ? 'dotted' : 'solid'); }
-        else g.edges.push({ id: randomUUID(), source: op.source, target: op.target, type: op.style, ...(op.pattern ? { pattern: op.pattern } : {}) });
+        if (existing) { existing.type = op.style; if (op.pattern || existing.pattern) existing.pattern = op.pattern ?? (op.style === 'dotted' ? 'dotted' : 'solid'); if (op.label !== undefined) setEdgeLabel(existing, op.label); }
+        else g.edges.push({ id: randomUUID(), source: op.source, target: op.target, type: op.style, ...(op.pattern ? { pattern: op.pattern } : {}), ...(op.label ? { label: op.label } : {}) });
       } else if (op.type === 'colorNodes') {
         op.ids.forEach(id => { find(id).color = op.color; });
       } else if (op.type === 'deleteEdges') {
@@ -114,6 +164,7 @@ export class GraphStore {
         e.pattern = op.pattern ?? e.pattern ?? (e.type === 'dotted' ? 'dotted' : 'solid');
         if (op.arrows !== undefined) e.type = op.arrows === 'none' ? 'line' : op.arrows;
         else if (e.type === 'dotted') e.type = 'line';
+        if (op.label !== undefined) setEdgeLabel(e, op.label);
         }
       } else if (['addPetal', 'updatePetal', 'deletePetal', 'movePetal'].includes(op.type)) {
         const node = find(op.nodeId); node.petals ||= [];
@@ -154,12 +205,12 @@ export class GraphStore {
   redo() { if (!this.future.length) return this.snapshot(); this.past.push(this.graph); this.graph = this.future.pop(); this.changed('You', 'Redid a change'); return this.snapshot(); }
 }
 export function toCanvas(graph) {
-  return { nodes: graph.nodes.map(n => ({ id: n.id, type: 'text', text: n.text, x: Math.round(n.x - 90), y: Math.round(n.y - 55), width: 180, height: 110, color: n.color, bloom: { root: !!n.root, depth: n.depth, petals: n.petals } })), edges: graph.edges.map(e => ({ id: e.id, fromNode: e.source, toNode: e.target, fromEnd: ['both', 'reverse'].includes(e.type) ? 'arrow' : 'none', toEnd: ['both', 'arrow'].includes(e.type) ? 'arrow' : 'none', bloom: { type: e.type, pattern: e.pattern } })) };
+  return { nodes: graph.nodes.map(n => ({ id: n.id, type: 'text', text: n.text, x: Math.round(n.x - 90), y: Math.round(n.y - 55), width: 180, height: 110, color: n.color, bloom: { root: !!n.root, depth: n.depth, petals: n.petals, size: n.size } })), edges: graph.edges.map(e => ({ id: e.id, fromNode: e.source, toNode: e.target, ...(e.label ? { label: e.label } : {}), fromEnd: ['both', 'reverse'].includes(e.type) ? 'arrow' : 'none', toEnd: ['both', 'arrow'].includes(e.type) ? 'arrow' : 'none', bloom: { type: e.type, pattern: e.pattern } })) };
 }
 export function fromCanvas(data, title = 'Imported canvas') {
   data = { nodes: [], edges: [], ...data };
   if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) throw new Error('Invalid JSON Canvas file.');
   if (data.nodes.some(n => n.type !== 'text')) throw new Error('This version imports text nodes only.');
   const presets = ['#ffffff', '#ed7d9c', '#dd8460', '#f3af47', '#4bbda0', '#64a7e5', '#8675ef'];
-  return validateGraph({ format: 'bloom', version: 1, title, nodes: data.nodes.map(n => ({ id: n.id, text: n.text, x: n.x + n.width / 2, y: n.y + n.height / 2, color: /^#[0-9a-f]{6}$/i.test(n.color) ? n.color : presets[Number(n.color)] || '#ffffff', root: n.bloom?.root ?? false, depth: n.bloom?.depth, ...(n.bloom?.petals ? { petals: n.bloom.petals } : {}) })), edges: data.edges.map(e => ({ id: e.id, source: !e.bloom?.type && e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.toNode : e.fromNode, target: !e.bloom?.type && e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.fromNode : e.toNode, ...(e.bloom?.pattern ? { pattern: e.bloom.pattern } : {}), type: e.bloom?.type ?? (e.fromEnd === 'arrow' && e.toEnd !== 'none' ? 'both' : e.toEnd !== 'none' || e.fromEnd === 'arrow' ? 'arrow' : 'line') })) });
+  return validateGraph({ format: 'bloom', version: 1, title, nodes: data.nodes.map(n => ({ id: n.id, text: n.text, x: n.x + n.width / 2, y: n.y + n.height / 2, color: /^#[0-9a-f]{6}$/i.test(n.color) ? n.color : presets[Number(n.color)] || '#ffffff', root: n.bloom?.root ?? false, depth: n.bloom?.depth, ...(n.bloom?.size ? { size: n.bloom.size } : {}), ...(n.bloom?.petals ? { petals: n.bloom.petals } : {}) })), edges: data.edges.map(e => ({ id: e.id, source: !e.bloom?.type && e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.toNode : e.fromNode, target: !e.bloom?.type && e.fromEnd === 'arrow' && e.toEnd === 'none' ? e.fromNode : e.toNode, ...(e.bloom?.pattern ? { pattern: e.bloom.pattern } : {}), ...(typeof e.label === 'string' && e.label.trim() ? { label: e.label.trim().slice(0, 80) } : {}), type: e.bloom?.type ?? (e.fromEnd === 'arrow' && e.toEnd !== 'none' ? 'both' : e.toEnd !== 'none' || e.fromEnd === 'arrow' ? 'arrow' : 'line') })) });
 }

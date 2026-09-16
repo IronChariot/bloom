@@ -1,4 +1,5 @@
 import { revisions } from './revisions.js';
+import { layoutOverlaps } from './graph.js';
 // Agent responses deliberately omit browser state and layout unless requested.
 export function readView(board, { view = 'compact', nodeIds, includeLayout = false } = {}) {
   const graph = JSON.parse(board.graph);
@@ -14,6 +15,10 @@ export function readView(board, { view = 'compact', nodeIds, includeLayout = fal
       edges,
     },
   };
+  if (!ids && (view === 'full' || includeLayout)) {
+    const overlaps = layoutOverlaps(nodes);
+    if (overlaps.length) result.layoutIssues = { overlaps, message: 'These blobs cover each other on the canvas. Move one of each pair, or let automatic placement choose by omitting x and y.' };
+  }
   if (ids) {
     const found = new Set(nodes.map(n => n.id));
     result.scope = {

@@ -17,7 +17,7 @@ export function checkRevision(board, input) {
     return;
   }
   const ops = input.operations || [];
-  const content = ops.some(op => op.type !== 'updateNode' || op.text !== undefined || op.color !== undefined);
+  const content = ops.some(op => op.type !== 'updateNode' || op.text !== undefined || op.color !== undefined || op.size !== undefined || op.depth !== undefined);
   const layout = ops.some(op => ['updateNode', 'addNode'].includes(op.type) && (op.x !== undefined || op.y !== undefined));
   const current = revisions(board);
   if (content && input.expectedContentRevision !== current.contentRevision) throw new Error('Board content changed. Read it again before retrying.');

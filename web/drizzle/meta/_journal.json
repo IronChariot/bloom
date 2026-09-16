@@ -43,6 +43,13 @@
       "when": 1789231469409,
       "tag": "0005_slimy_titania",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789547036025,
+      "tag": "0006_many_agent_keys",
+      "breakpoints": true
     }
   ]
 }

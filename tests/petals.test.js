@@ -22,8 +22,10 @@ test('new branches point outward; line patterns and arrows compose and bulk undo
 test('petals enforce capacity, unique slots, authored comments and allowed conversions atomically',()=>{
   const store=new GraphStore(newGraph()),nodeId=store.graph.nodes[0].id;
   const run=ops=>store.apply(ops,'Display name',store.revision,'real@example.com');
-  run([{type:'addPetal',nodeId,id:'note',kind:'comment',comment:'First\nsecond',author:'forged@example.com',createdAt:1}]);
-  const note=store.graph.nodes[0].petals[0]; assert.equal(note.author,'real@example.com'); assert.notEqual(note.createdAt,1); assert.equal(note.slot,0);
+  // Authorship is the server's to assign: a client that tries to supply it is refused outright.
+  assert.throws(()=>run([{type:'addPetal',nodeId,id:'note',kind:'comment',comment:'Forged',author:'forged@example.com',createdAt:1}]),/author/);
+  run([{type:'addPetal',nodeId,id:'note',kind:'comment',comment:'First\nsecond'}]);
+  const note=store.graph.nodes[0].petals[0]; assert.equal(note.author,'real@example.com'); assert.ok(note.createdAt>1); assert.equal(note.slot,0);
   run([{type:'updatePetal',nodeId,id:'note',comment:'Edited',color:'#123456'}]);
   assert.throws(()=>run([{type:'updatePetal',nodeId,id:'note',beforeComment:'First\nsecond',comment:'Stale edit'}]),/changed/);
   assert.equal(store.graph.nodes[0].petals[0].createdAt,note.createdAt); assert.equal(store.graph.nodes[0].petals[0].updatedBy,'real@example.com');
