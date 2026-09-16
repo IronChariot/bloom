@@ -162,6 +162,12 @@ An edit receipt describes only its own committed batch. If its `previousRevision
 
 Screenshots remain optional with the existing freshness/retry guidance. A bounded wait inside `get_board_image` is not implemented: currently a missing/stale image requests a browser capture and tells the agent to retry after 15 seconds.
 
+## Keeping a client in step with the server
+
+An MCP client fetches the tool list **once, when its session connects**, and keeps it for that session. Bloom's endpoint is stateless HTTP and never pushes a `tools/list_changed` notification, so a deploy cannot reach a connected client. Resuming a conversation replays the tool schema stored in its own transcript, so restarting the application does not refresh it either, and neither does asking the agent to look again.
+
+Every response therefore carries `mcp`, the server's feature version. If that is newer than the tool schema an agent holds, the newer fields still work, because the server validates each call against its current schema. To see them advertised, start a **new conversation**; that session fetches the current list.
+
 ## Diagrams: placement, labels and sizes (MCP 0.8)
 
 Automatic placement no longer stacks blobs. Previously the position came from the parent and the sibling index alone, so two branches of equal generation could resolve to identical coordinates and hide each other. `addNode` without `x`/`y` now searches outward from its parent and takes the first position whose blob touches nothing, widening the ring for larger blobs. Supplying `x` or `y` still places the node exactly there, without the check.
