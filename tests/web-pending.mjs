@@ -9,7 +9,7 @@ import { boardCode } from '../web/public/canvas/agent-code.js';
 // Exercise the real renderer and bridge against deliberately delayed responses.
 const graph = newGraph(); graph.title = 'A little room for big ideas'; graph.nodes[0].text = 'Drag check';
 const store = new GraphStore(graph), edits = [];
-let connectionConfigured = false;
+let connections = [];
 const testToken = 'ab'.repeat(32);
 const snapshot = () => ({ ...store.snapshot(), boardId: 'pending-test', dirty: false,
   members: [], role: 'owner', user: { id: 'test', name: 'Test' }, agentEnabled: true, recent: [] });
@@ -22,8 +22,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/me') return send({ userId: 'test', displayName: 'Test' });
     if (url.pathname === '/api/boards') return send({ boards: [{ id: 'pending-test', title: graph.title }] });
     if (url.pathname === '/api/agent-connection') {
-      if (req.method === 'GET') return send({ configured: connectionConfigured });
-      connectionConfigured = true; return send({ token: 'bloom_agent_' + testToken });
+      if (req.method === 'GET') return send({ connections });
+      if (body.revoke) { connections = connections.filter(c => c.id !== body.revoke); return send({ connections }); }
+      if (!body.label) return send({ error: 'Name this connection first.' }, 400);
+      connections = [...connections, { id: 'key-' + (connections.length + 1), label: body.label, created: Date.now(), used: null }];
+      return send({ token: 'bloom_agent_' + testToken, id: connections.at(-1).id, connections });
     }
     if (url.pathname.endsWith('/presence')) return send({ presence: [], expires: Date.now() + 45000 });
     if (url.pathname.endsWith('/agent')) return send({ token: testToken, enabled: true });
@@ -121,20 +124,40 @@ try {
   await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).startsWith('bloom_'));
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), boardCode(testToken));
   await frame.locator('.agent-setup summary').click();
-  await frame.getByRole('button', { name: 'Copy one-time Hermes setup', exact: true }).click();
-  await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('mcp_servers:'));
-  const setup = await page.evaluate(() => navigator.clipboard.readText());
+  // A key needs a name, so that the list can identify and revoke it later.
+  await frame.getByRole('button', { name: 'Copy Hermes setup', exact: true }).click();
+  assert.match(await frame.locator('#toast').innerText(), /Name this connection/i);
+  const copySetup = async (button, name, contains) => {
+    await frame.locator('#connection-label').fill(name);
+    await frame.getByRole('button', { name: button, exact: true }).click();
+    await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes(contains));
+    return page.evaluate(() => navigator.clipboard.readText());
+  };
+  const setup = await copySetup('Copy Hermes setup', 'Hermes on the mini PC', 'mcp_servers:');
   assert.match(setup, /bloom_agent_/); assert.ok(!setup.includes('?board='));
-  await frame.locator('.agent-setup summary').click();
-  await frame.getByRole('button', { name: 'Copy one-time Codex setup', exact: true }).click();
-  await waitFor(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('[mcp_servers.bloom]'));
-  const codexSetup = await page.evaluate(() => navigator.clipboard.readText());
+  const codexSetup = await copySetup('Copy Codex setup', 'Codex here', '[mcp_servers.bloom]');
   assert.ok(codexSetup.includes('Authorization = "Bearer bloom_agent_' + testToken + '"'));
   assert.ok(!codexSetup.includes('?board='));
+  const claudeSetup = await copySetup('Copy Claude Code setup (CLI)', 'Claude Code on this laptop', 'claude mcp add');
+  assert.ok(claudeSetup.includes('--transport http --scope user bloom '));
+  assert.ok(claudeSetup.includes('--header "Authorization: Bearer bloom_agent_' + testToken + '"'));
+  assert.ok(!claudeSetup.includes('?board='));
+  // The desktop app has no CLI, so its setup is a config entry rather than a command.
+  const appSetup = JSON.parse(await copySetup('Copy Claude Code setup (app)', 'Claude Code desktop app', '"mcpServers"'));
+  assert.deepEqual(appSetup.mcpServers.bloom.headers, { Authorization: 'Bearer bloom_agent_' + testToken });
+  assert.equal(appSetup.mcpServers.bloom.type, 'http');
+  assert.ok(!appSetup.mcpServers.bloom.url.includes('?board='));
+  assert.equal(await frame.locator('.connection-item').count(), 4);
+  assert.deepEqual(await frame.locator('.connection-item strong').allInnerTexts(),
+    ['Hermes on the mini PC', 'Codex here', 'Claude Code on this laptop', 'Claude Code desktop app']);
+  await frame.locator('.connection-item', { hasText: 'Codex here' }).getByRole('button', { name: 'Revoke' }).click();
+  await waitFor(async () => await frame.locator('.connection-item').count() === 3);
+  assert.deepEqual(await frame.locator('.connection-item strong').allInnerTexts(),
+    ['Hermes on the mini PC', 'Claude Code on this laptop', 'Claude Code desktop app']);
   await fs.mkdir('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/bloom-header-and-agent-setup.png' });
   assert.deepEqual(errors, []);
-  console.log('PASS: centered responsive board title, copyable board code and board-independent one-time setup');
+  console.log('PASS: centered responsive board title, copyable board code and named, separately revocable connection keys');
   await frame.getByRole('button', { name: 'Agent session', exact: true }).click();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const labels = ['Automatic placement', 'Explore new possibilities together', 'ArchitectureAndCollaboration', 'Wide WWW labels remain readable', 'Hallucinations?'];

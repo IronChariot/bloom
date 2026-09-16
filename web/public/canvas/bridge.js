@@ -1,6 +1,6 @@
 import { createPresenceClient } from './presence-client.js';
 import { boardCode } from './agent-code.js';
-let current, boardId, boardList = [], user, localClipboard = '', listeners = [], actions = [], viewport = {}, agentToken = null, connectionToken = null, pending = 0, started = false, imageBusy = false;
+let current, boardId, boardList = [], user, localClipboard = '', listeners = [], actions = [], viewport = {}, agentToken = null, pending = 0, started = false, imageBusy = false;
 let lastInteraction = Date.now(), pollTimer, polling = false, failures = 0, rendererReady = false;
 const topUrl = new URL(window.parent.location.href);
 const mcpUrl = () => `${user?.mcpOrigin || location.origin}/mcp?board=${boardId}`;
@@ -107,15 +107,16 @@ window.bloom = {
     if (name === 'sessionToggle') { await request(`boards/${boardId}/agent`, { enabled: value }); current.agentEnabled = value; return window.bloom.session(); }
     if (name === 'revokeSession') { await request(`boards/${boardId}/agent`, { revoke: true }); agentToken = null; current.agentEnabled = false; return window.bloom.session(); }
     if (name === 'rotateSession') { agentToken = (await request(`boards/${boardId}/agent`, {})).token; current.agentEnabled = true; return window.bloom.session(); }
-    if (name === 'copyHermes' || name === 'copyCodex' || name === 'replaceConnection') {
-      if (!connectionToken || name === 'replaceConnection') connectionToken = (await request('agent-connection', { replace: name === 'replaceConnection' })).token;
-      if (name === 'copyCodex') {
-        await writeClipboard(`[mcp_servers.bloom]\nurl = ${JSON.stringify(connectionUrl())}\nhttp_headers = { Authorization = ${JSON.stringify('Bearer ' + connectionToken)} }\n`);
-        return;
-      }
-      await writeClipboard(`mcp_servers:\n  bloom:\n    url: "${connectionUrl()}"\n    headers:\n      Authorization: "Bearer ${connectionToken}"\n`);
-      return;
+    if (name === 'copyHermes' || name === 'copyCodex' || name === 'copyClaude' || name === 'copyClaudeApp') {
+      // Each agent gets its own named key, so that revoking one leaves the others connected.
+      const created = await request('agent-connection', { label: value }), key = created.token;
+      if (name === 'copyClaude') await writeClipboard(`claude mcp add --transport http --scope user bloom ${connectionUrl()} --header "Authorization: Bearer ${key}"\n`);
+      else if (name === 'copyClaudeApp') await writeClipboard(JSON.stringify({ mcpServers: { bloom: { type: 'http', url: connectionUrl(), headers: { Authorization: `Bearer ${key}` } } } }, null, 2) + '\n');
+      else if (name === 'copyCodex') await writeClipboard(`[mcp_servers.bloom]\nurl = ${JSON.stringify(connectionUrl())}\nhttp_headers = { Authorization = ${JSON.stringify('Bearer ' + key)} }\n`);
+      else await writeClipboard(`mcp_servers:\n  bloom:\n    url: "${connectionUrl()}"\n    headers:\n      Authorization: "Bearer ${key}"\n`);
+      return created.connections;
     }
+    if (name === 'revokeConnection') return (await request('agent-connection', { revoke: value })).connections;
     if (name === 'copyBoardCode') {
       if (!boardId) throw new Error('Open a board first.');
       const result = await request(`boards/${boardId}/agent`, { reuse: true }); agentToken = result.token; current.agentEnabled = result.enabled;
@@ -130,7 +131,7 @@ window.bloom = {
     }
     throw new Error('Unknown action.');
   },
-  async session() { const connection = await request('agent-connection'); return { url: boardId ? mcpUrl() : 'Open a board first', connectionUrl: connectionUrl(), connectionConfigured: connection.configured, canCopyConnection: !!connectionToken, enabled: !!current?.agentEnabled }; },
+  async session() { const connection = await request('agent-connection'); return { url: boardId ? mcpUrl() : 'Open a board first', connectionUrl: connectionUrl(), connections: connection.connections || [], enabled: !!current?.agentEnabled }; },
   viewport(value) { viewport = value; }, flushed() {},
   onState(fn) { listeners.push(fn); }, onAction(fn) { actions.push(fn); }, onAgent() {}
 };

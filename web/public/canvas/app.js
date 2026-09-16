@@ -3,7 +3,7 @@ import { displayName } from './attribution.js';
 import { blobOutline, outlineDistance } from './outline.js';
 import { createPetals } from './petals.js';
 import { colorShades } from './color-shades.js';
-import { labelLayout } from './label-layout.js';
+import { labelLayout, MIN_NODE_SIZE, MAX_NODE_SIZE } from './label-layout.js';
 import { createDeformation, stepDeformation } from './deformation.js';
 import { boardKey, withPendingEdits } from './pending-edits.js';
 const api = window.bloom;
@@ -11,6 +11,8 @@ const icons = {
  pointer: '<path d="m5 3 14 9-7 1-3 7z"/>', plus: '<path d="M12 5v14M5 12h14"/>', hand: '<path d="M8 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v7-4a2 2 0 0 1 4 0v9c0 5-4 7-7 7s-5-2-7-5l-3-4a2 2 0 0 1 3-2l2 2"/>', undo: '<path d="m8 5-5 5 5 5M3 10h11a6 6 0 0 1 0 12" transform="translate(0 -2)"/>', redo: '<path d="m16 5 5 5-5 5M21 10H10a6 6 0 0 0 0 12" transform="translate(0 -2)"/>', trash: '<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>', copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>', minus: '<path d="M5 12h14"/>', fit: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>', chevron: '<path d="m8 10 4 4 4-4"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', agent: '<rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M9 17h6M1 11v5M23 11v5"/>', arrow: '<path d="M3 12h17m-5-5 5 5-5 5"/>', both: '<path d="M3 12h18M8 7l-5 5 5 5m8-10 5 5-5 5"/>', line: '<path d="M3 12h18"/>', dotted: '<path d="M3 12h18" stroke-dasharray="2 4"/>', save: '<path d="M4 3h14l3 3v15H3V3h1M7 3v6h10V3M7 21v-8h10v8"/>', folder: '<path d="M3 20V5h7l2 3h9v12z"/>', spark: '<path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/>'
 };
 icons.upload = '<path d="M12 17V5m-5 5 5-5 5 5M4 21h16"/>';
+icons.grow = '<circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/>';
+icons.shrink = '<circle cx="12" cy="12" r="8"/><path d="M8 12h8"/>';
 icons.download = '<path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/>';
 icons.reverse = '<path d="M21 12H4m5-5-5 5 5 5"/>';
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.plus}</svg>`;
@@ -127,7 +129,7 @@ function renderGraph() {
     return `<g class="bubble${n.root ? ' root' : ''}${selected.has(n.id) ? ' selected' : ''}" transform="translate(${p.x},${p.y})" data-node="${esc(n.id)}" role="button" tabindex="0" aria-label="${esc(n.text || 'Empty idea')}"><title>${esc(n.text || 'Empty idea')}</title><path class="selection-ring" d="${blob(r.rx, r.ry, 0, 0, p.seed, 7)}"/><path class="bubble-shape" d="${blob(r.rx, r.ry, 0, 0, p.seed)}" fill="${n.color}"/><text style="font-size:${font}px" ${editor?.id === n.id ? 'visibility="hidden"' : ''}>${lines.map((line, i) => `<tspan x="0" y="${(i - (lines.length - 1) / 2) * font * 1.28 + font * .32}">${esc(line)}</tspan>`).join('')}</text></g>`;
   }).join('');
   petalsLayer.innerHTML = state.graph.nodes.map(n => `<g data-petal-node="${esc(n.id)}">${petalUI.render(n)}</g>`).join('');
-  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/></g>`).join('');
+  edgesLayer.innerHTML = state.graph.edges.map(e => `<g data-edge="${esc(e.id)}"><path class="edge-hit"/><path class="edge${selectedEdges.has(e.id) ? ' selected' : ''}" ${(e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) === 'dotted' ? 'stroke-dasharray="3 7" stroke-linecap="round"' : ''} ${['arrow', 'both'].includes(e.type) ? 'marker-end="url(#arrow-end)"' : ''} ${['both', 'reverse'].includes(e.type) ? 'marker-start="url(#arrow-end)"' : ''}/>${e.label ? `<text class="edge-label">${esc(e.label)}</text>` : ''}</g>`).join('');
   renderPresence(performance.now(), true);
 }
 function blob(rx, ry, t, wobble, seed, extra = 0, shape = null, grab = null) {
@@ -167,7 +169,11 @@ function frame(now) {
       // Attach to the actual animated outline, with room for the arrow's stroke.
       const l1 = outlineDistance(a.outline, dx, dy) + 1.5, l2 = outlineDistance(b.outline, -dx, -dy) + 1.5;
       const x1 = a.x + Math.cos(angle) * l1, y1 = a.y + Math.sin(angle) * l1, x2 = b.x - Math.cos(angle) * l2, y2 = b.y - Math.sin(angle) * l2;
-      const el = edgesLayer.querySelector(`[data-edge="${CSS.escape(e.id)}"]`); if (el) for (const path of el.querySelectorAll('path')) path.setAttribute('d', `M${x1},${y1} C${x1 + dx * .24},${y1 + dy * .12} ${x2 - dx * .24},${y2 - dy * .12} ${x2},${y2}`);
+      const el = edgesLayer.querySelector(`[data-edge="${CSS.escape(e.id)}"]`); if (!el) continue;
+      for (const path of el.querySelectorAll('path')) path.setAttribute('d', `M${x1},${y1} C${x1 + dx * .24},${y1 + dy * .12} ${x2 - dx * .24},${y2 - dy * .12} ${x2},${y2}`);
+      // This curve's midpoint is the average of its ends, because the handles are symmetric.
+      const caption = el.querySelector('.edge-label');
+      if (caption) { caption.setAttribute('x', (x1 + x2) / 2); caption.setAttribute('y', (y1 + y2) / 2); }
     }
     if (editor) positionEditor();
   }
@@ -184,16 +190,42 @@ function fit() {
 }
 function setTool(value) { tool = value; document.querySelectorAll('[data-tool]').forEach(el => el.classList.toggle('active', el.dataset.tool === tool)); board.classList.toggle('creating', tool === 'add'); }
 function select(id, additive = false) { if (!additive) selected.clear(); if (id) { if (additive && selected.has(id)) selected.delete(id); else selected.add(id); } selectedEdges.clear(); renderGraph(); renderSelection(); }
+function restoreLabelDraft(draft) {
+  const field = draft && document.querySelector('#edge-label');
+  if (!field || field.dataset.edgeId !== draft.id) return;
+  field.value = draft.value; field.focus(); field.setSelectionRange(draft.start, draft.end);
+}
+// Explicit sizes free a blob from its generation, so a long chain can stay readable.
+function resizeSelection(direction) {
+  const clamp = value => Math.max(MIN_NODE_SIZE, Math.min(MAX_NODE_SIZE, Math.round(value * 1000) / 1000));
+  const ops = [...selected].map(id => nodeById(id)).filter(Boolean)
+    .map(n => ({ node: n, size: clamp((n.size ?? 1) * (direction === 'grow' ? 1.25 : .8)) }))
+    .filter(({ node, size }) => size !== (node.size ?? 1))
+    .map(({ node, size }) => ({ type: 'updateNode', id: node.id, size }));
+  if (!ops.length) { toast(direction === 'grow' ? 'Already the largest size.' : 'Already the smallest size.'); return; }
+  for (const op of ops) { labelCache.delete(nodeById(op.id)); const p = physical.get(op.id); if (p) p.wobble = 1; }
+  apply(ops);
+}
+function saveEdgeLabel(input) {
+  // Use the connection this field was drawn for, not whatever is selected when focus leaves.
+  const id = input.dataset.edgeId, edge = state?.graph?.edges.find(e => e.id === id);
+  if (!edge || input.value.trim() === (edge.label || '')) return;
+  apply([{ type: 'updateEdge', id, label: input.value.trim() }]);
+}
 function renderSelection() {
   api.selection?.({ kind: selectedEdges.size ? 'edges' : 'nodes', ids: [...(selectedEdges.size ? selectedEdges : selected)].slice(0, 1000) });
   closeShades();
+  // A collaborator's edit re-renders this bar; an unfinished label must survive that.
+  const typing = document.querySelector('#edge-label');
+  const draft = typing && document.activeElement === typing ? { id: typing.dataset.edgeId, value: typing.value, start: typing.selectionStart, end: typing.selectionEnd } : null;
   const el = document.querySelector('#selection-actions'); el.classList.toggle('hidden', !selected.size && !selectedEdges.size);
   if (selectedEdges.size) {
     const edges = state.graph.edges.filter(e => selectedEdges.has(e.id));
     const button = (group, value, label, glyph) => `<button data-edge-${group}="${value}" title="${label}" aria-label="${label}" aria-pressed="${edges.every(e => (group === 'pattern' ? (e.pattern || (e.type === 'dotted' ? 'dotted' : 'solid')) : (['line', 'dotted'].includes(e.type) ? 'none' : e.type)) === value)}">${icon(glyph)}</button>`;
-    el.innerHTML = `<span class="label">${edges.length === 1 ? 'Connection' : `${edges.length} connections`}</span>${button('pattern','solid','Solid line','line')}${button('pattern','dotted','Dotted line','dotted')}<div class="zoom-sep" style="align-self:center"></div>${button('arrows','none','No arrow','line')}${button('arrows','arrow','Forward arrow','arrow')}${button('arrows','reverse','Reverse arrow','reverse')}${button('arrows','both','Two-way arrow','both')}<button class="delete" data-delete aria-label="Delete connection">${icon('trash')}</button>`; return;
+    el.innerHTML = `<span class="label">${edges.length === 1 ? 'Connection' : `${edges.length} connections`}</span>${button('pattern','solid','Solid line','line')}${button('pattern','dotted','Dotted line','dotted')}<div class="zoom-sep" style="align-self:center"></div>${button('arrows','none','No arrow','line')}${button('arrows','arrow','Forward arrow','arrow')}${button('arrows','reverse','Reverse arrow','reverse')}${button('arrows','both','Two-way arrow','both')}${edges.length === 1 ? `<input class="edge-label-input" id="edge-label" data-edge-id="${esc(edges[0].id)}" maxlength="80" placeholder="Label" aria-label="Connection label" value="${esc(edges[0].label || '')}">` : ''}<button class="delete" data-delete aria-label="Delete connection">${icon('trash')}</button>`;
+    restoreLabelDraft(draft); return;
   }
-  el.innerHTML = `<span class="label">${selected.size === 1 ? 'Idea' : `${selected.size} ideas`}</span>${colors.map(c => `<button data-color="${c}" aria-haspopup="true" title="Set colour ${c} · Hold for shades" aria-label="Set colour ${c}"><span class="swatch" style="background:${c}"></span></button>`).join('')}<div class="zoom-sep" style="align-self:center"></div><button data-copy title="Copy selected ideas" aria-label="Copy selected ideas">${icon('copy')}</button><button class="delete" data-delete title="Delete selected ideas" aria-label="Delete selected ideas">${icon('trash')}</button>`;
+  el.innerHTML = `<span class="label">${selected.size === 1 ? 'Idea' : `${selected.size} ideas`}</span>${colors.map(c => `<button data-color="${c}" aria-haspopup="true" title="Set colour ${c} · Hold for shades" aria-label="Set colour ${c}"><span class="swatch" style="background:${c}"></span></button>`).join('')}<div class="zoom-sep" style="align-self:center"></div><button data-size="shrink" title="Make smaller" aria-label="Make smaller">${icon('shrink')}</button><button data-size="grow" title="Make bigger" aria-label="Make bigger">${icon('grow')}</button><div class="zoom-sep" style="align-self:center"></div><button data-copy title="Copy selected ideas" aria-label="Copy selected ideas">${icon('copy')}</button><button class="delete" data-delete title="Delete selected ideas" aria-label="Delete selected ideas">${icon('trash')}</button>`;
 }
 function closeShades() {
   if (shadeHold) clearTimeout(shadeHold.timer);
@@ -386,10 +418,15 @@ function fileMenu() {
   const item = (name, label, shortcut) => `<button class="menu-item" data-command="${name}">${label}<span class="shortcut">${shortcut || ''}</span></button>`;
   panels.innerHTML = `<div class="popover file-menu">${item('new', 'New brainstorm', 'Ctrl N')}${item('open', state.graph ? 'Import into current board…' : 'Import board…', 'Ctrl O')}<div class="menu-rule"></div>${item('save', 'Download board', 'Ctrl S')}${item('saveAs', 'Duplicate board')}${item('export', 'Export JSON Canvas…')}<div class="menu-rule"></div><div class="menu-label">Recent boards</div>${state.recent.length ? state.recent.map(p => `<button class="menu-item" data-recent="${esc(p)}"><span class="recent-name">${esc(state.boardList?.find(b => b.id === p)?.title || p)}</span></button>`).join('') : '<div class="menu-item" style="color:#aaa">Your shared boards will appear here</div>'}<div class="menu-rule"></div><button class="menu-item" id="profile-toggle"><span>Your name…</span></button>${item('close', 'Close board', 'Ctrl W')}</div>`;
 }
+// Keep the setup section open while keys are added, because each copy re-renders the panel.
+let setupOpen = false;
+document.addEventListener('toggle', e => { if (e.target.classList?.contains('agent-setup')) setupOpen = e.target.open; }, true);
 async function showSession() { if (openPanel === 'session') { closePanel(); return; } sessionInfo = await api.session(); openPanel = 'session'; renderSession(); }
 function renderSession() {
   if (!sessionInfo) return; const last = state.agentActivity;
-  panels.innerHTML = `<section class="popover session-panel" aria-label="Agent session"><div class="panel-heading">Think together<button data-close-panel aria-label="Close panel">${icon('close')}</button></div><div class="session-status"><span class="session-indicator${sessionInfo.enabled ? ' active' : ''}"></span>${sessionInfo.enabled ? 'Agent access enabled' : 'Agent access paused'}</div><p>Give your agent this board’s code. It connects once and can return until you revoke access.</p>${state.role === 'owner' ? '<button class="primary-button" id="copy-board-code">Copy board code</button><p class="agent-code-note">Paste it privately to your agent, like an editing invitation. Copying it again keeps the same code.</p><button class="subtle-button" id="pause-session">' + (sessionInfo.enabled ? 'Pause agent access' : 'Resume agent access') + '</button><button class="subtle-button" id="revoke-session">Revoke board code and agent access</button><button class="subtle-button" id="rotate-session">Replace board code and remove existing grants</button>' : '<p>Ask the board owner for an agent code.</p>'}<details class="agent-setup"><summary>One-time agent setup</summary><p>Add Bloom to Codex or Hermes once. Afterwards, share board codes here—no configuration changes or restarts for new boards.</p><div class="endpoint">${esc(sessionInfo.connectionUrl)}</div>${sessionInfo.connectionConfigured && !sessionInfo.canCopyConnection ? '<p>A connection key already exists. Reuse the key from your Hermes or Codex setup to connect another agent. Replace it below only if you no longer have it.</p>' : '<button class="primary-button" id="copy-hermes">Copy one-time Hermes setup</button><button class="subtle-button" id="copy-codex">Copy one-time Codex setup</button><p class="agent-code-note">For Codex, merge the copied block into your user-level ~/.codex/config.toml, then restart Codex.</p>'}${sessionInfo.connectionConfigured ? '<button class="subtle-button" id="replace-connection">Replace connection key and copy setup</button><p class="agent-code-note">Replacing the connection key disconnects clients using the old key. Board grants are retained for the new key.</p>' : ''}</details><div class="activity-title">Activity</div>${last ? `<div class="activity-item">Agent<span>${esc(last.message)}</span></div>` : ''}${state.activity.slice(-4).reverse().map(a => `<div class="activity-item">${esc(displayName(state,a.actorId || a.actor,a.actor))}<span>${esc(a.message)}</span></div>`).join('')}</section>`;
+  const when = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const connections = (sessionInfo.connections || []).map(c => `<div class="connection-item"><div><strong>${esc(c.label)}</strong><span>Added ${when(c.created)} · ${c.used ? 'used ' + when(c.used) : 'not used yet'}</span></div><button class="subtle-button" data-revoke-connection="${esc(c.id)}">Revoke</button></div>`).join('');
+  panels.innerHTML = `<section class="popover session-panel" aria-label="Agent session"><div class="panel-heading">Think together<button data-close-panel aria-label="Close panel">${icon('close')}</button></div><div class="session-status"><span class="session-indicator${sessionInfo.enabled ? ' active' : ''}"></span>${sessionInfo.enabled ? 'Agent access enabled' : 'Agent access paused'}</div><p>Give your agent this board’s code. It connects once and can return until you revoke access.</p><button class="primary-button" id="copy-board-code">Copy board code</button><p class="agent-code-note">Paste it privately to your agent, like an editing invitation. Copying it again keeps the same code.</p>${state.role === 'owner' ? '<button class="subtle-button" id="pause-session">' + (sessionInfo.enabled ? 'Pause agent access' : 'Resume agent access') + '</button><button class="subtle-button" id="revoke-session">Revoke board code and agent access</button><button class="subtle-button" id="rotate-session">Replace board code and remove existing grants</button>' : '<p class="agent-code-note">Your agent uses your own connection key below. The board owner can pause or revoke agent access for everyone.</p>'}<details class="agent-setup"${setupOpen ? ' open' : ''}><summary>One-time agent setup</summary><p>Add Bloom to Claude Code, Codex or Hermes once. Give each agent its own key, so that you can revoke one without disturbing the others.</p><div class="endpoint">${esc(sessionInfo.connectionUrl)}</div><input class="connection-label" id="connection-label" maxlength="60" placeholder="Name this connection, like Claude Code on this laptop" aria-label="Name this connection"><button class="primary-button" id="copy-claude-app">Copy Claude Code setup (app)</button><button class="subtle-button" id="copy-claude">Copy Claude Code setup (CLI)</button><button class="subtle-button" id="copy-codex">Copy Codex setup</button><button class="subtle-button" id="copy-hermes">Copy Hermes setup</button><p class="agent-code-note">Each button makes a new key and copies its setup once. Claude Code app: merge the JSON into ~/.claude.json, then reopen the app. Claude Code CLI: run the command in a terminal. Codex: merge it into ~/.codex/config.toml. Hermes: merge it into ~/.hermes/config.yaml, then restart the gateway.</p>${connections || '<p class="agent-code-note">No connection keys yet.</p>'}</details><div class="activity-title">Activity</div>${last ? `<div class="activity-item">Agent<span>${esc(last.message)}</span></div>` : ''}${state.activity.slice(-4).reverse().map(a => `<div class="activity-item">${esc(displayName(state,a.actorId || a.actor,a.actor))}<span>${esc(a.message)}</span></div>`).join('')}</section>`;
 
 }
 async function showProfile() {
@@ -408,6 +445,7 @@ async function showProfile() {
   } catch(error) { toast(error.message); }
 }
 function showHelp() { if (openPanel === 'help') { closePanel(); return; } openPanel = 'help'; panels.innerHTML = `<section class="popover help-panel"><div class="panel-heading">Follow a thought<button data-close-panel aria-label="Close help">${icon('close')}</button></div><p>Every bubble is an idea. Grow a branch, move it around, see where it takes you.</p>${[['New idea', 'Double-click canvas'], ['Grow a branch', 'Double-click a bubble'], ['Edit idea', 'Click text · Enter to finish'], ['New line', 'Shift Enter'], ['Move idea', 'Drag bubble body'], ['Connect ideas', 'Drag onto another bubble'], ['Select several', 'Shift-click'], ['Pan canvas', 'Drag space · middle drag'], ['Zoom', 'Scroll · + / −'], ['Fit everything', 'F'], ['Copy / paste', 'Ctrl C / V'], ['Undo / redo', 'Ctrl Z / Shift Z'], ['Delete selection', 'Delete · Backspace']].map(([a, b]) => `<div class="shortcut-row"><strong>${a}</strong><span>${b}</span></div>`).join('')}</section>`; }
+document.addEventListener('focusout', e => { if (e.target.id === 'edge-label') saveEdgeLabel(e.target); });
 document.addEventListener('click', async e => {
   const button = e.target.closest('button'); if (!button) return;
   if (button.dataset.command) { runCommand(button.dataset.command); closePanel(); }
@@ -417,11 +455,22 @@ document.addEventListener('click', async e => {
   if (button.hasAttribute('data-copy')) copy();
   if (button.hasAttribute('data-delete')) removeSelection();
   if (button.hasAttribute('data-close-panel')) closePanel();
+  if (button.dataset.revokeConnection) { try { await api.command('revokeConnection', button.dataset.revokeConnection); sessionInfo = await api.session(); renderSession(); toast('Connection key revoked. That agent can no longer connect.'); } catch (error) { toast(error.message); } return; }
+  if (button.dataset.size && selected.size) resizeSelection(button.dataset.size);
   if ((button.dataset.edgePattern || button.dataset.edgeArrows) && selectedEdges.size) apply([{ type: 'styleEdges', ids: [...selectedEdges], ...(button.dataset.edgePattern ? { pattern: button.dataset.edgePattern } : { arrows: button.dataset.edgeArrows }) }]);
-  const actions = { 'profile-toggle': showProfile, 'file-toggle': fileMenu, 'session-toggle': showSession, 'help-toggle': showHelp, 'zoom-in': () => zoom(1.15), 'zoom-out': () => zoom(1 / 1.15), 'zoom-value': () => zoom(1 / view.zoom), fit, tidy, 'copy-session': async () => { await act('copySession'); toast('MCP connection copied.'); }, 'copy-hermes': async () => { try { await api.command('copyHermes'); sessionInfo = await api.session(); renderSession(); toast('One-time Hermes setup copied. Keep its connection key private.'); } catch (e) { toast(e.message); } }, 'copy-codex': async () => { try { await api.command('copyCodex'); sessionInfo = await api.session(); renderSession(); toast('One-time Codex setup copied. Add it to your user config.toml and restart Codex.'); } catch (e) { toast(e.message); } }, 'copy-board-code': async () => { try { await api.command('copyBoardCode'); sessionInfo = await api.session(); renderSession(); toast('Board code copied. Paste it privately to your agent.'); } catch (e) { toast(e.message); } }, 'replace-connection': async () => { try { await api.command('replaceConnection'); sessionInfo = await api.session(); renderSession(); toast('New setup copied. Update Hermes once; existing board grants are retained.'); } catch (e) { toast(e.message); } }, 'copy-agent-token': async () => { await act('copyAgentToken'); toast('Secret token copied. Keep it in Hermes environment settings.'); }, 'rotate-session': async () => { sessionInfo = await api.command('rotateSession'); renderSession(); toast('Old code and grants revoked. Copy the new board code for your agent.'); }, 'revoke-session': async () => { sessionInfo = await api.command('revokeSession'); renderSession(); toast('Board code and agent grants revoked.'); }, 'pause-session': async () => { sessionInfo = await api.command('sessionToggle', !sessionInfo.enabled); renderSession(); } };
+  const addConnection = async (command, note) => {
+    const field = document.querySelector('#connection-label'), label = (field?.value || '').trim();
+    if (!label) { toast('Name this connection first, so that you can revoke it later.'); field?.focus(); return; }
+    try { await api.command(command, label); sessionInfo = await api.session(); renderSession(); toast(note); } catch (error) { toast(error.message); }
+  };
+  const actions = { 'profile-toggle': showProfile, 'file-toggle': fileMenu, 'session-toggle': showSession, 'help-toggle': showHelp, 'zoom-in': () => zoom(1.15), 'zoom-out': () => zoom(1 / 1.15), 'zoom-value': () => zoom(1 / view.zoom), fit, tidy, 'copy-session': async () => { await act('copySession'); toast('MCP connection copied.'); }, 'copy-hermes': () => addConnection('copyHermes', 'Hermes setup copied. Merge it into ~/.hermes/config.yaml, then restart the gateway.'), 'copy-codex': () => addConnection('copyCodex', 'Codex setup copied. Merge it into your user config.toml, then restart Codex.'), 'copy-claude': () => addConnection('copyClaude', 'Claude Code command copied. Run it once in a terminal; it needs the claude CLI.'), 'copy-claude-app': () => addConnection('copyClaudeApp', 'Claude Code app setup copied. Merge it into ~/.claude.json, then reopen the app.'), 'copy-board-code': async () => { try { await api.command('copyBoardCode'); sessionInfo = await api.session(); renderSession(); toast('Board code copied. Paste it privately to your agent.'); } catch (e) { toast(e.message); } }, 'copy-agent-token': async () => { await act('copyAgentToken'); toast('Secret token copied. Keep it in Hermes environment settings.'); }, 'rotate-session': async () => { sessionInfo = await api.command('rotateSession'); renderSession(); toast('Old code and grants revoked. Copy the new board code for your agent.'); }, 'revoke-session': async () => { sessionInfo = await api.command('revokeSession'); renderSession(); toast('Board code and agent grants revoked.'); }, 'pause-session': async () => { sessionInfo = await api.command('sessionToggle', !sessionInfo.enabled); renderSession(); } };
   actions[button.id]?.();
 });
 document.addEventListener('keydown', e => {
+  if (e.target.id === 'edge-label' && (e.key === 'Enter' || e.key === 'Escape')) {
+    if (e.key === 'Enter') saveEdgeLabel(e.target); else renderSelection();
+    e.preventDefault(); svg.focus(); return;
+  }
   if (e.target.matches('input,textarea,[contenteditable]')) return; const mod = e.ctrlKey || e.metaKey;
   if (e.key === 'Escape') { clearTimeout(editTimer); drag = null; pan = null; activeTarget = null; document.querySelector('#connector-picker').classList.add('hidden'); board.classList.remove('panning'); closePanel(); select(null); setTool('select'); return; }
   if (mod && ['c', 'x', 'v', 'a', 'z', 'y'].includes(e.key.toLowerCase())) { e.preventDefault(); if (e.key.toLowerCase() === 'c') copy(); if (e.key.toLowerCase() === 'x') void copy().then(removeSelection); if (e.key.toLowerCase() === 'v') paste(); if (e.key.toLowerCase() === 'a' && state.graph) { if (selectedEdges.size) selectedEdges = new Set(state.graph.edges.map(e => e.id)); else selected = new Set(state.graph.nodes.map(n => n.id)); renderGraph(); renderSelection(); } if (e.key.toLowerCase() === 'z') act(e.shiftKey ? 'redo' : 'undo'); if (e.key.toLowerCase() === 'y') act('redo'); return; }

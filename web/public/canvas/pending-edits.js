@@ -12,7 +12,7 @@ export function withPendingEdits(confirmed, edits) {
     if (op.type === 'colorNodes') { for (const id of op.ids) patches.set(id, { ...patches.get(id), color: op.color }); continue; }
     if (op.type !== 'updateNode') continue;
     const patch = patches.get(op.id) || {};
-    for (const key of ['x', 'y', 'text', 'color']) if (op[key] !== undefined) patch[key] = op[key];
+    for (const key of ['x', 'y', 'text', 'color', 'size']) if (op[key] !== undefined) patch[key] = op[key];
     patches.set(op.id, patch);
   }
   return { ...confirmed, dirty: true, graph: { ...confirmed.graph, title,

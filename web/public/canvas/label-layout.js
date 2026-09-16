@@ -36,12 +36,22 @@ export function wrapLabel(text, width, measure, splitWords = true) {
 }
 
 export const MIN_LABEL_FONT = 8;
+export const MIN_NODE_SIZE = .4, MAX_NODE_SIZE = 3;
+// Generation sets a default size; an explicit size overrides it without changing the tree.
+export function nodeScale(node) {
+  return Math.max(.38, .8 ** (node.root ? 0 : node.depth ?? 1)) * (node.size ?? 1);
+}
+// Text is not measured here, so the server can predict a blob's footprint too.
+export function labelExtent(node) {
+  const longest = Math.max(...String(node.text || ' ').split('\n').map(s => s.length));
+  const scale = nodeScale(node);
+  return { rx: Math.min(155, Math.max(116, longest * 3.4 + 37)) * scale, ry: 90 * scale };
+}
 export function labelLayout(node, measureText) {
   const depth = node.root ? 0 : node.depth ?? 1;
-  const nominalFont = Math.max(12, 22 * .91 ** depth), scale = Math.max(.38, .8 ** depth);
+  const nominalFont = Math.max(12, 22 * .91 ** depth) * (node.size ?? 1);
   const text = node.text || ' ';
-  const longest = Math.max(...text.split('\n').map(s => s.length));
-  const rx = Math.min(155, Math.max(116, longest * 3.4 + 37)) * scale, ry = 90 * scale;
+  const { rx, ry } = labelExtent(node);
   let font = nominalFont, lines;
   const measure = value => measureText(value, font, !!node.root);
   // Central rows can use more of the ellipse; outer rows must respect its curved sides.
