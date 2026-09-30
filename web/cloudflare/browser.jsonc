@@ -7,6 +7,8 @@
   "workers_dev": true,
   "preview_urls": false,
   "assets": { "directory": "../public", "binding": "ASSETS", "run_worker_first": true },
+  "durable_objects": { "bindings": [{ "name": "BOARD_ROOM", "class_name": "BoardRoom" }] },
+  "migrations": [{ "tag": "v1-board-rooms", "new_sqlite_classes": ["BoardRoom"] }],
   "d1_databases": [{ "binding": "DB", "database_name": "bloom", "database_id": "8f8c4b7f-dbbd-4825-a0cf-c542aeab5ca4", "migrations_dir": "../drizzle" }],
   "vars": {
     "MCP_ORIGIN": "https://bloom-mcp.theothersam.workers.dev",

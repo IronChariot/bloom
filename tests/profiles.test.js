@@ -20,9 +20,9 @@ test('account names persist, resolve historical attribution and cannot rename an
     const user = {userId:'email:sam@example.com',email:'sam@example.com',displayName:'sam@example.com'};
     for (const id of ['one','two']) {
       sql.prepare('INSERT INTO boards (id, owner, graph, updated) VALUES (?, ?, ?, 0)').run(id,user.userId,'{}');
-      sql.prepare('INSERT INTO members VALUES (?, ?, ?, ?, 0)').run(id,user.userId,user.displayName,'owner');
+      sql.prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, 0)').run(id,user.userId,user.displayName,'owner');
     }
-    sql.prepare('INSERT INTO members VALUES (?, ?, ?, ?, 0)').run('one','email:other@example.com','Other','editor');
+    sql.prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, 0)').run('one','email:other@example.com','Other','editor');
     for (const [revision,actor] of [[0,user.email],[1,user.userId],[2,'AI collaborator']]) sql.prepare('INSERT INTO changes VALUES (?, ?, ?, ?, 0, ?)').run('one',revision,'{}',actor,'Edited');
     assert.equal((await profileIdentity(db,user)).hasDisplayName,false);
     await saveProfile(db,user,{displayName:'  Sam <&>  ',userId:'email:other@example.com'});

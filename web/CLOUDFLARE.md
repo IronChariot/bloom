@@ -34,12 +34,12 @@ npm run cf:build
 npm run cf:test
 npx wrangler d1 migrations apply bloom --remote --config cloudflare/browser.jsonc
 node scripts/ensure-agent-code-key.mjs
-npm run cf:deploy:agent
 npm run cf:deploy:browser
+npm run cf:deploy:agent
 node scripts/smoke-cloudflare.mjs
 ```
 
-The configs contain existing account/database IDs; do not create another database for a routine deployment. Static assets ship with the human Worker; the production Cloudflare path does not run Next/Vinext SSR. The repository tracks web source directly, not a nested Git repository. Deployment is through Wrangler; GitHub push does not automatically deploy.
+The configs contain existing account/database IDs; do not create another database for a routine deployment. Deploy the browser Worker before the MCP Worker: the MCP Worker binds to the `BoardRoom` Durable Object class that the browser Worker defines. Static assets ship with the human Worker; the production Cloudflare path does not run Next/Vinext SSR. The repository tracks web source directly, not a nested Git repository. Deployment is through Wrangler; GitHub push does not automatically deploy.
 
 ## Hermes handoff
 
@@ -80,3 +80,5 @@ Remaining external checks: a second human's actual invitation/sign-in and instal
 For a database backup, use `npx wrangler d1 export bloom --remote --config cloudflare/browser.jsonc --output ../artifacts/bloom-cloudflare-backup.sql`. Keep backups private. Changes to source can be redeployed from Git history; a Worker rollback does not restore database content.
 
 Shared selections and editing locks: migration `0005_slimy_titania.sql` adds per-tab presence and per-node edit leases. Browser version `fa144dbb-dafd-41c3-a791-e499dccb98bf` shows red selection outlines with display names, acquires a lock before opening text editing, renews it while editing and preserves drafts on failures. MCP version `f103790f-81bd-4064-a00f-66df6134356c` enforces active human text locks inside the graph/history transaction. Presence has no graph revision or Undo entries. All 31 core tests, 2 Access tests, the two-browser collaboration suite, import and delayed-save browser checks, both builds and the live MCP regression suite passed. The production lock check used a disposable board and removed its fixtures. Refresh open tabs to load the new client.
+
+Live collaboration (MCP 0.9, not yet deployed): migrations `0007_member_colours.sql` (a colour per board member) and `0008_per_person_undo.sql` (the `undo_steps` table), plus a `BoardRoom` Durable Object (SQLite-backed, so it is available on the Workers Free plan; migration tag `v1-board-rooms`). The browser Worker serves `/api/boards/:id/live` WebSockets after the same Access sign-in, a same-origin check and a membership check. Both Workers nudge the room after each committed edit, and removing a member closes their live connections. The room uses WebSocket hibernation and answers pings without waking, so it accrues duration only while people are moving or selecting. To deploy: apply the two D1 migrations, then `npm run cf:deploy:browser` (creates the Durable Object class), then `npm run cf:deploy:agent`. `node tests/web-room.mjs` from the parent directory runs the real Durable Object in workerd.

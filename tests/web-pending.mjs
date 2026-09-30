@@ -79,7 +79,7 @@ try {
   const second = await drop(90, -35); await staysAt(second);
   assert.equal(edits.length, 1, 'The second edit should wait for the first revision');
   edits[0].commit(); await waitFor(() => edits.length === 2); await staysAt(second);
-  assert.equal(edits[1].body.expectedRevision, 1);
+  assert.equal(edits[1].body.baseRevision, 1);
   edits[1].commit(); await waitFor(async () => await frame.locator('#save-status').innerText() === 'All changes saved'); await staysAt(second);
   assert.ok(Math.abs(store.graph.nodes[0].x - second.x) < .1);
   console.log('PASS: dropped position stays fixed through latency, two queued drags and the older save response');

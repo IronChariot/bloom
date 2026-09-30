@@ -1,7 +1,12 @@
 import { createPresenceClient } from './presence-client.js';
 import { boardCode } from './agent-code.js';
+import { renderRoster } from './collaborators.js';
+import { createLiveChannel, mergePresence } from './live.js';
 let current, boardId, boardList = [], user, localClipboard = '', listeners = [], actions = [], viewport = {}, agentToken = null, pending = 0, started = false, imageBusy = false;
 let lastInteraction = Date.now(), pollTimer, polling = false, failures = 0, rendererReady = false;
+// Live peers by session, sessions that just left (until the synced list forgets them too), and
+// what this tab is showing others.
+let syncedPresence = [], livePeers = new Map(), departed = new Set(), liveSelection = { kind: 'nodes', ids: [] }, liveEditing = null, lastPointer = null;
 const topUrl = new URL(window.parent.location.href);
 const mcpUrl = () => `${user?.mcpOrigin || location.origin}/mcp?board=${boardId}`;
 const connectionUrl = () => `${user?.mcpOrigin || location.origin}/mcp`;
@@ -12,16 +17,58 @@ async function request(path, body, options = {}) {
 }
 function notify(next) {
   if (next.graph) boardList = boardList.map(b => b.id === (next.boardId || boardId) ? { ...b, title: next.graph.title } : b);
-  current = { ...next, sessionId: collaboration.sessionId, recent: boardList.map(b => b.id), boardList };
+  if (next.presence) syncedPresence = next.presence;
+  current = { ...next, presence: mergePresence(syncedPresence, livePeers, departed), sessionId: collaboration.sessionId, recent: boardList.map(b => b.id), boardList };
   for (const fn of listeners) fn(current);
   const status = document.querySelector('#save-status'); if (status) status.textContent = current.graph ? pending ? 'Saving changes…' : 'All changes saved' : 'No board open';
+  if (rendererReady) renderRoster(current.members, current.user?.id, locate);
   const presence = document.querySelector('#people'); if (presence) { const count = (current.members || []).filter(m => Date.now() - m.seen < 45000).length; presence.textContent = count > 1 ? `${count} here` : 'Share board'; }
 }
-const collaboration = createPresenceClient({ request, getBoard: () => boardId, receive: presence => { if (current) { current.presence = presence; actions.forEach(fn => fn({ type: 'presence', presence, sessionId: collaboration.sessionId })); } }, lost: lease => actions.forEach(fn => fn({ type: 'editLockLost', lease })) });
+const collaboration = createPresenceClient({ request, getBoard: () => boardId, receive: presence => receivePresence(presence), lost: lease => { if (liveEditing === lease.nodeId) { liveEditing = null; shareSelection(); } actions.forEach(fn => fn({ type: 'editLockLost', lease })); } });
+function receivePresence(synced) {
+  syncedPresence = synced || [];
+  for (const id of departed) if (!syncedPresence.some(p => p.sessionId === id)) departed.delete(id);
+  emitPresence();
+}
+function emitPresence() {
+  if (!current) return;
+  current.presence = mergePresence(syncedPresence, livePeers, departed);
+  actions.forEach(fn => fn({ type: 'presence', presence: current.presence, sessionId: collaboration.sessionId }));
+}
+const live = createLiveChannel({ sessionId: collaboration.sessionId, onMessage: liveMessage, onStatus: () => { if (boardId) schedulePoll(); } });
+function liveMessage(message) {
+  const cursor = peer => actions.forEach(fn => fn({ type: 'cursor', id: peer.id, userId: peer.userId, name: peer.name, color: peer.color, x: peer.cursor?.x ?? null, y: peer.cursor?.y ?? null }));
+  if (message.t === 'welcome') {
+    livePeers = new Map(message.peers.map(peer => [peer.id, peer]));
+    actions.forEach(fn => fn({ type: 'cursorsReset' })); livePeers.forEach(cursor); emitPresence();
+  } else if (message.t === 'join') {
+    livePeers.set(message.peer.id, message.peer); departed.delete(message.peer.id); emitPresence();
+  } else if (message.t === 'leave') {
+    livePeers.delete(message.id); departed.add(message.id);
+    actions.forEach(fn => fn({ type: 'cursorLeft', id: message.id })); emitPresence();
+  } else if (message.t === 'select' && livePeers.has(message.id)) {
+    livePeers.get(message.id).select = { kind: message.kind, ids: message.ids, editing: message.editing }; emitPresence();
+  } else if (message.t === 'cursor' && livePeers.has(message.id)) {
+    const peer = livePeers.get(message.id); peer.cursor = message.x === null ? null : { x: message.x, y: message.y }; cursor(peer);
+  } else if (message.t === 'rev' && current && message.revision > current.revision) schedulePoll(0);
+}
+function shareSelection() { live.select({ ...liveSelection, editing: liveEditing }); }
+// Go to where someone is: their pointer if they have one on the board, otherwise what they selected.
+function locate(person) { actions.forEach(fn => fn({ type: 'locate', userId: person.id, name: person.name })); }
+// Pointer positions are shared in board coordinates, so they land in the right place at any zoom.
+function shareCursor() {
+  if (!lastPointer || !Number.isFinite(viewport.zoom) || lastPointer.y < 76) { live.cursor(null); return; }
+  live.cursor({ x: (lastPointer.x - viewport.x) / viewport.zoom, y: (lastPointer.y - 76 - viewport.y) / viewport.zoom });
+}
+document.addEventListener('pointermove', e => { lastPointer = { x: e.clientX, y: e.clientY }; shareCursor(); }, { passive: true });
+document.addEventListener('mouseout', e => { if (!e.relatedTarget) { lastPointer = null; shareCursor(); } });
+window.addEventListener('blur', () => { lastPointer = null; shareCursor(); });
 collaboration.start();
 async function refreshList() { boardList = (await request('boards')).boards; }
 async function switchBoard(id) {
-  const next = await request(`boards/${id}`); await collaboration.leave(); boardId = id; agentToken = null; started = true; failures = 0; topUrl.searchParams.set('board', id); topUrl.searchParams.delete('invite'); topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(next); lastInteraction = Date.now(); schedulePoll(0);
+  const next = await request(`boards/${id}`); await collaboration.leave(); boardId = id; agentToken = null; started = true; failures = 0; topUrl.searchParams.set('board', id); topUrl.searchParams.delete('invite'); topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl);
+  livePeers = new Map(); departed = new Set(); liveEditing = null; actions.forEach(fn => fn({ type: 'cursorsReset' }));
+  notify(next); lastInteraction = Date.now(); schedulePoll(0); live.connect(id);
 }
 async function boot() {
   user = await request('me'); await refreshList();
@@ -70,22 +117,28 @@ async function writeClipboard(text) { localClipboard = text; try { await navigat
 function report(message) { actions.forEach(fn => fn({ type: 'error', message })); }
 window.bloom = {
   async getState() { return started ? current : boot(); },
-  selection(value) { collaboration.select(value); },
+  selection(value) { collaboration.select(value); liveSelection = value; shareSelection(); },
   async acquireEdit(nodeId) {
     const lease = await collaboration.acquire(nodeId);
-    try { const next = await request(`boards/${lease.board}`); if (lease.board === boardId) notify(next); return lease; }
+    try { const next = await request(`boards/${lease.board}`); if (lease.board === boardId) { notify(next); liveEditing = nodeId; shareSelection(); } return lease; }
     catch (error) { await collaboration.release(lease); throw error; }
   },
-  releaseEdit(lease) { return collaboration.release(lease); },
-  async apply(operations, expectedRevision, editLease) {
+  releaseEdit(lease) { if (lease && liveEditing === lease.nodeId) { liveEditing = null; shareSelection(); } return collaboration.release(lease); },
+  // Edits made here are replayed on the latest board, so other people's unrelated changes never
+  // block them. strict keeps the whole-board revision check, for callers that read the board first.
+  async apply(operations, expectedRevision, editLease, { strict = false } = {}) {
     if (!boardId) throw new Error('Open a board first.'); lastInteraction = Date.now(); pending++; notify(current);
     const id = boardId;
-    const preconditions = { expectedRevision, sessionId: collaboration.sessionId, ...(editLease ? { editLease: { nodeId: editLease.nodeId, token: editLease.token } } : {}) };
-    if (current.revision === expectedRevision && Number.isInteger(current.contentRevision) && Number.isInteger(current.layoutRevision)) {
+    const preconditions = { ...(strict ? { expectedRevision } : { baseRevision: expectedRevision }), sessionId: collaboration.sessionId, ...(editLease ? { editLease: { nodeId: editLease.nodeId, token: editLease.token } } : {}) };
+    if (strict && current.revision === expectedRevision && Number.isInteger(current.contentRevision) && Number.isInteger(current.layoutRevision)) {
       if (operations.some(op => op.type !== 'updateNode' || op.text !== undefined || op.color !== undefined)) preconditions.expectedContentRevision = current.contentRevision;
       if (operations.some(op => ['updateNode', 'addNode'].includes(op.type) && (op.x !== undefined || op.y !== undefined))) preconditions.expectedLayoutRevision = current.layoutRevision;
     }
-    try { const next = await request(`boards/${id}/edit`, { operations, ...preconditions }); pending--; if (id === boardId) notify(next); return current; }
+    try {
+      const { skipped, ...next } = await request(`boards/${id}/edit`, { operations, ...preconditions }); pending--;
+      if (id === boardId) { notify(next); if (skipped?.length) report('Someone else removed part of what you changed, so that part was skipped.'); }
+      return current;
+    }
     catch (error) { pending--; try { const next = await request(`boards/${id}`); if (id === boardId) notify(next); } catch {} throw error; }
   },
   async command(name, value) {
@@ -98,10 +151,15 @@ window.bloom = {
     if (name === 'new' || name === 'saveAs') { const made = await request('boards', name === 'saveAs' ? { graph: current.graph } : {}); await refreshList(); await switchBoard(made.id); return; }
     if (name === 'open') return upload();
     if (name === 'recent') return switchBoard(value);
-    if (name === 'close') { await collaboration.leave(); boardId = null; topUrl.search = ''; topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(blank()); return; }
+    if (name === 'close') { await collaboration.leave(); live.close(); livePeers = new Map(); actions.forEach(fn => fn({ type: 'cursorsReset' })); boardId = null; topUrl.search = ''; topUrl.hash = ''; window.parent.history.replaceState({}, '', topUrl); notify(blank()); return; }
     if (name === 'save') { if (current.graph) download(current.graph, 'bloom'); return; }
     if (name === 'export') { if (boardId) download(await request(`boards/${boardId}/export`), 'canvas'); return; }
-    if (name === 'undo' || name === 'redo') { if (boardId) notify(await request(`boards/${boardId}/edit`, { action: name, expectedRevision: current.revision, sessionId: collaboration.sessionId })); return; }
+    // Undo is per person and merges with other people's newer work, so it needs no revision check.
+    if (name === 'undo' || name === 'redo') {
+      if (!boardId) return;
+      const { notice, ...next } = await request(`boards/${boardId}/edit`, { action: name, sessionId: collaboration.sessionId });
+      notify(next); if (notice) report(notice); return;
+    }
     if (name === 'copyNodes') return writeClipboard(value);
     if (name === 'pasteNodes') { try { return await navigator.clipboard.readText(); } catch { return localClipboard; } }
     if (name === 'sessionToggle') { await request(`boards/${boardId}/agent`, { enabled: value }); current.agentEnabled = value; return window.bloom.session(); }
@@ -132,24 +190,25 @@ window.bloom = {
     throw new Error('Unknown action.');
   },
   async session() { const connection = await request('agent-connection'); return { url: boardId ? mcpUrl() : 'Open a board first', connectionUrl: connectionUrl(), connections: connection.connections || [], enabled: !!current?.agentEnabled }; },
-  viewport(value) { viewport = value; }, flushed() {},
+  viewport(value) { viewport = value; shareCursor(); }, flushed() {},
   onState(fn) { listeners.push(fn); }, onAction(fn) { actions.push(fn); }, onAgent() {}
 };
 function schedulePoll(delay = pollDelay()) {
   clearTimeout(pollTimer);
   if (!document.hidden && boardId) pollTimer = setTimeout(pollBoard, delay);
 }
-function pollDelay() { return failures ? Math.min(60000, 2000 * 2 ** failures) : (Date.now() - lastInteraction < 30000 || current?.presence?.some(p => p.expires > Date.now() && (p.ids.length || p.editing))) ? 2000 : 15000; }
+// With a live room, changes and selections are pushed, so the sync is only a safety net.
+function pollDelay() { return failures ? Math.min(60000, 2000 * 2 ** failures) : live.open ? 15000 : (Date.now() - lastInteraction < 30000 || current?.presence?.some(p => p.expires > Date.now() && (p.ids.length || p.editing))) ? 2000 : 15000; }
 async function pollBoard() {
   if (polling) return;
   if (!started || !boardId || pending || document.hidden) { schedulePoll(); return; }
   polling = true; const id = boardId;
   try {
     const next = await request(`boards/${id}/sync`, { revision: current.revision }); failures = 0;
-    if (id === boardId) { current.presence = next.presence || []; actions.forEach(fn => fn({ type: 'presence', presence: current.presence, sessionId: collaboration.sessionId })); }
+    if (id === boardId) receivePresence(next.presence);
     if (id !== boardId || next.revision < current.revision || pending) return;
     if (next.state) { if (next.state.revision >= current.revision) notify(next.state); }
-    else { const namesChanged = (current.members || []).length !== next.members.length || next.members.some(m => !current.members?.some(old => old.id === m.id && old.name === m.name)); current.members = next.members; if(namesChanged) notify({ ...current, user: { ...current.user, name: next.members.find(m => m.id === current.user?.id)?.name || current.user?.name } }); current.agentEnabled = next.agentEnabled; const people = document.querySelector('#people'); if (people) { const count = next.members.filter(m => Date.now() - m.seen < 45000).length; people.textContent = count > 1 ? `${count} here` : 'Share board'; } }
+    else { const namesChanged = (current.members || []).length !== next.members.length || next.members.some(m => !current.members?.some(old => old.id === m.id && old.name === m.name)); current.members = next.members; if(namesChanged) notify({ ...current, user: { ...current.user, name: next.members.find(m => m.id === current.user?.id)?.name || current.user?.name } }); current.agentEnabled = next.agentEnabled; renderRoster(current.members, current.user?.id, locate); const people = document.querySelector('#people'); if (people) { const count = next.members.filter(m => Date.now() - m.seen < 45000).length; people.textContent = count > 1 ? `${count} here` : 'Share board'; } }
     const status = document.querySelector('#save-status'); if (status) status.textContent = 'All changes saved';
     if (next.captureRequested) await supplyImage(id, next.captureRequested);
   } catch (error) {
@@ -217,7 +276,7 @@ try {
     const lifecycle = new AbortController(); window.addEventListener('pagehide', () => lifecycle.abort(), { once: true });
     for (const tool of [
       { name: 'get_board', description: 'Read the current shared brainstorm graph and revision.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, untrustedContentHint: true }, execute: async () => current },
-      { name: 'edit_board', description: 'Apply an atomic batch to the shared brainstorm. Use the revision from get_board.', inputSchema: { type: 'object', properties: { operations: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object' } }, expectedRevision: { type: 'integer' } }, required: ['operations', 'expectedRevision'], additionalProperties: false }, execute: async input => window.bloom.apply(input.operations, input.expectedRevision) }
+      { name: 'edit_board', description: 'Apply an atomic batch to the shared brainstorm. Use the revision from get_board.', inputSchema: { type: 'object', properties: { operations: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object' } }, expectedRevision: { type: 'integer' } }, required: ['operations', 'expectedRevision'], additionalProperties: false }, execute: async input => window.bloom.apply(input.operations, input.expectedRevision, undefined, { strict: true }) }
     ]) await context.registerTool(tool, { signal: lifecycle.signal });
   }
 } catch (error) {

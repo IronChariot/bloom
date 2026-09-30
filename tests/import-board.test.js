@@ -25,7 +25,7 @@ test('import replaces a shared board atomically, preserves access and supports u
     const api = (segments, body, who=user) => withIdentity(who,()=>handleApi(new Request(`https://bloom.test/api/${segments.join('/')}`, body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json',Origin:'https://bloom.test'},body:JSON.stringify(body)}),segments));
     const {id} = await api(['boards'],{graph:newGraph(true)});
     sql.prepare('UPDATE boards SET invite_hash = ?, agent_hash = ? WHERE id = ?').run('invite-kept','agent-kept',id);
-    sql.prepare('INSERT INTO members VALUES (?, ?, ?, ?, 0)').run(id,'editor','Editor','editor');
+    sql.prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, 0)').run(id,'editor','Editor','editor');
     const original = await api(['boards',id]);
     const imported = newGraph(); imported.title = 'Restored download';
     imported.nodes[0].petals = [{id:'note',slot:3,kind:'comment',color:'#ed7d9c',comment:'Preserve this note',author:'prior@example.com',createdAt:100}];

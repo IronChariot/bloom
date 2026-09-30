@@ -223,8 +223,10 @@ try {
     await query('DELETE FROM agent_grants WHERE owner = ?', [connectionOwner]);
     await query('DELETE FROM agent_connections WHERE owner = ?', [connectionOwner]);
     await query('DELETE FROM changes WHERE board_id = ?', [secondId]);
+    await query('DELETE FROM undo_steps WHERE board_id = ?', [secondId]);
     await query('DELETE FROM boards WHERE id = ?', [secondId]);
     await query('DELETE FROM changes WHERE board_id = ?', [id]);
+    await query('DELETE FROM undo_steps WHERE board_id = ?', [id]);
     await query('DELETE FROM edit_locks WHERE board_id = ?', [id]);
     await query('DELETE FROM presence WHERE board_id = ?', [id]);
     await query('DELETE FROM members WHERE board_id = ?', [id]);

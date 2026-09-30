@@ -31,11 +31,19 @@ button.board-title{display:block;padding:2px 4px;border-radius:5px;min-width:0;t
 .profile-panel{top:88px;left:24px;width:min(310px,calc(100vw - 48px))}.profile-panel label{display:block;margin:14px 0 6px;font-weight:600}.profile-panel input{width:100%;padding:10px 12px;border:1px solid #ded9f4;border-radius:8px;background:white;margin-bottom:16px}
 
 /* Shared selection uses a solid red outline, independent of your purple selection. */
-.bubble.remote-selected .bubble-shape{stroke:#d75262;stroke-width:4;vector-effect:non-scaling-stroke}
-[data-edge].remote-selected .edge{stroke:#d75262;stroke-width:5;vector-effect:non-scaling-stroke}
+.bubble.remote-selected .bubble-shape{stroke:var(--presence,#d75262);stroke-width:4;vector-effect:non-scaling-stroke}
+[data-edge].remote-selected .edge{stroke:var(--presence,#d75262);stroke-width:5;vector-effect:non-scaling-stroke}
 #collaboration-labels{pointer-events:none;position:fixed;inset:0;z-index:7}
-.remote-selection-label{position:fixed;width:max-content;max-width:240px;height:26px;padding:5px 9px;border:1px solid #edbac1;border-radius:9px;background:#fff7f8;color:#aa3043;box-shadow:0 2px 8px #78253810;font-size:11px;font-weight:600;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.draft-recovery{position:fixed;z-index:30;right:22px;bottom:70px;width:320px;max-width:calc(100vw - 32px);padding:16px;border:1px solid #edbac1;border-radius:14px;background:white;box-shadow:0 8px 35px #28334b20}
+.remote-selection-label{position:fixed;width:max-content;max-width:240px;height:26px;padding:5px 9px;border:1px solid color-mix(in srgb,var(--presence,#d75262) 35%,white);border-radius:9px;background:color-mix(in srgb,var(--presence,#d75262) 6%,white);color:var(--presence,#aa3043);box-shadow:0 2px 8px #29344712;font-size:11px;font-weight:600;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.draft-recovery{position:fixed;z-index:30;right:64px;bottom:70px;width:320px;max-width:calc(100vw - 32px);padding:16px;border:1px solid #edbac1;border-radius:14px;background:white;box-shadow:0 8px 35px #28334b20}
 .draft-recovery p{font-size:12px;line-height:1.5;color:#7f8694}.draft-recovery textarea{width:100%;height:90px;resize:vertical;border:1px solid #dedfe7;border-radius:8px;padding:8px}.draft-recovery>div{display:flex;justify-content:space-between;margin-top:10px;gap:4px}.draft-recovery button{padding:7px;border-radius:7px;font-size:11px;color:#7161d7}
 
-.draft-recoveries{position:fixed;z-index:30;right:22px;bottom:70px;display:flex;flex-direction:column;gap:10px;max-height:70vh;overflow-y:auto}.draft-recovery{position:relative;right:auto;bottom:auto;flex-shrink:0}
+.draft-recoveries{position:fixed;z-index:30;right:64px;bottom:70px;display:flex;flex-direction:column;gap:10px;max-height:70vh;overflow-y:auto}.draft-recovery{position:relative;right:auto;bottom:auto;flex-shrink:0}
+.bubble.remote-editing .bubble-shape{stroke-dasharray:8 5}
+#roster{position:fixed;z-index:8;right:28px;bottom:74px;display:flex;flex-direction:column-reverse;align-items:center;gap:5px}#roster[hidden]{display:none}
+.roster-person{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--person,#858b98);color:white;font-size:9.5px;font-weight:700;letter-spacing:.02em;box-shadow:0 0 0 2px white,0 2px 6px #29344722;cursor:default;user-select:none}
+.roster-person.me{box-shadow:0 0 0 2px white,0 0 0 3.5px var(--person),0 2px 6px #29344722}.roster-person.more{background:white;color:var(--muted);box-shadow:0 0 0 1px var(--line),0 2px 6px #29344712;font-size:9px}
+#remote-cursors{pointer-events:none;position:fixed;inset:0;z-index:9;overflow:hidden}
+.remote-cursor{position:absolute;left:0;top:0;will-change:transform}.remote-cursor svg{display:block;fill:var(--person);stroke:white;stroke-width:1.3;stroke-linejoin:round;filter:drop-shadow(0 1px 2px #1f293733)}
+.remote-cursor-name{position:absolute;left:13px;top:17px;max-width:160px;padding:2px 7px;border-radius:7px 7px 7px 2px;background:var(--person);color:white;font-size:11px;font-weight:600;line-height:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px #1f293726}
+button.roster-person,button.roster-person:hover{padding:0;border:0;background:var(--person);cursor:pointer;transition:transform .12s}button.roster-person:hover,button.roster-person:focus-visible{transform:scale(1.12)}

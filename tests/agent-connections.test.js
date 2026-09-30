@@ -25,7 +25,7 @@ test('named connection keys are separate, and agent access follows board members
     const connect = key => agentConnection(new Request('https://bloom-mcp.test/mcp', { headers: { Authorization: `Bearer ${key}` } }));
 
     const { id } = await api(alice, ['boards'], { graph: newGraph(true) });
-    sql.prepare('INSERT INTO members VALUES (?, ?, ?, ?, 0)').run(id, 'bob', 'Bob', 'editor');
+    sql.prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, 0)').run(id, 'bob', 'Bob', 'editor');
 
     // One account holds several named keys, and each one is usable on its own.
     const hermes = await api(alice, ['agent-connection'], { label: 'Hermes on the mini PC' });

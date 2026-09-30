@@ -146,7 +146,7 @@ Every read and edit receipt includes three board-scoped numbers:
 
 For a text/colour/connection edit or automatically placed addition, pass `expectedContentRevision`. For a pure coordinate edit, pass `expectedLayoutRevision`. A batch with both content changes and explicit x/y values requires both. Deleting/adding nodes also advances layout, because membership changes the layout. All supplied preconditions are checked, even extra ones. This allows independent text and position edits to merge against the latest graph without overwriting each other. Competing text edits, competing coordinate edits and unsatisfied field-level `before` guards remain rejected. The browser uses these same separate preconditions.
 
-Legacy `expectedRevision` still provides a strict check of the entire board. If separate preconditions are supplied, they take precedence over that legacy value. An edit with no valid precondition is rejected. Undo/redo uses the overall revision. Existing boards get conservative initial counters during migration; legacy writers detected during deployment conservatively invalidate both counters.
+Legacy `expectedRevision` still provides a strict check of the entire board. If separate preconditions are supplied, they take precedence over that legacy value. An edit with no valid precondition is rejected. (The browser instead replays edits on the latest board; agents keep these strict checks.) Existing boards get conservative initial counters during migration; legacy writers detected during deployment conservatively invalidate both counters.
 
 After a read or edit, ask for net changes with:
 
@@ -156,7 +156,7 @@ After a read or edit, ask for net changes with:
 
 Pass this to `get_board`. The result contains `fromRevision`, the current three revisions, `resyncRequired: false`, full added/updated entities, removed node/edge IDs, and a changed title if applicable. This is the net difference between states, not an event log: a node added and deleted within the interval disappears from the net delta. At the current revision, the delta is empty. Do not combine `sinceRevision` with `nodeIds`; view/layout flags do not project deltas, which always contain complete changed entities.
 
-Retained history is bounded (up to 50 snapshots and 8 MiB, shared with undo/redo), and an abandoned redo branch may remove a cursor sooner. When a cursor is unavailable, the response explicitly returns `resyncRequired: true`. Read again without `sinceRevision` and replace the cached board before advancing its cursor. Future or negative cursors are errors.
+Retained history is bounded (up to 50 snapshots and 8 MiB). When a cursor is unavailable, the response explicitly returns `resyncRequired: true`. Read again without `sinceRevision` and replace the cached board before advancing its cursor. Future or negative cursors are errors.
 
 An edit receipt describes only its own committed batch. If its `previousRevision` differs from your cached revision, other changes occurred before the commit: request changes since your **cached** revision to catch them before advancing a full-board cache. Calling with the receipt's `revision` asks only about changes after that edit. Full snapshots and since-revision results each identify the consistent graph revision they represent; subsequent collaborators can still advance the board.
 
@@ -187,7 +187,7 @@ An agent cannot see the canvas, and `get_board_image` still needs a human with t
 - `get_board({boardId, includeLayout: true})` adds `layoutIssues.overlaps` when blobs cover each other, each entry naming the pair and whether their coordinates are identical.
 - `get_board_image` states the same overlap count in its text, whether or not a picture is available.
 
-`get_board({sinceRevision})` also returns `changes`: one entry per revision since that cursor, with its actor and kind. Watch for "Undid a shared change" there. Undo and redo are shared, so a collaborator can revert an agent's committed edit; the write was never lost, it was reverted, and this is how an agent sees that.
+`get_board({sinceRevision})` also returns `changes`: one entry per revision since that cursor, with its actor and kind. Watch for "Undid a shared change" there. Since MCP 0.9, undo is per person: an agent's edits join the undo history of the account it acts for (the connection key's owner, or the board owner for a board code), so that person can undo them, while other people's undo never reverts them. An undo restores only what still holds the value that change set. The write was never lost, it was reverted, and this is how an agent sees that.
 
 ## Connection styles and petals (MCP 0.7)
 

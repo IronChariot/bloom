@@ -3,3 +3,4 @@ release/
 artifacts/
 .sites-runtime/
 *.log
+.wrangler/

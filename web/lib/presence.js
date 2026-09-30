@@ -4,7 +4,7 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 100;
 export async function readPresence(db, boardId, now = Date.now()) {
   const rows = await db.prepare(`SELECT p.session_id AS sessionId, p.user_id AS userId,
-    COALESCE(f.display_name, m.name) AS name, p.kind, p.ids, p.expires,
+    COALESCE(f.display_name, m.name) AS name, m.color, p.kind, p.ids, p.expires,
     l.node_id AS editing, l.expires AS editExpires
     FROM presence p JOIN members m ON m.board_id = p.board_id AND m.user_id = p.user_id
     LEFT JOIN profiles f ON f.user_id = p.user_id

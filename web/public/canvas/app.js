@@ -1,4 +1,5 @@
 import { createPresenceView } from './presence-view.js';
+import { createCursorLayer } from './cursors.js';
 import { displayName } from './attribution.js';
 import { blobOutline, outlineDistance } from './outline.js';
 import { createPetals } from './petals.js';
@@ -34,6 +35,7 @@ let confirmedState;
 const pendingEdits = [];
 let editIntent = 0;
 const renderPresence = createPresenceView({ getState: () => state, getPhysical: () => physical, radius: n => radius(n), worldToClient: (x,y) => worldToClient(x,y) });
+const cursors = createCursorLayer({ worldToClient: (x, y) => worldToClient(x, y) });
 const uid = () => crypto.randomUUID();
 const nodeById = id => state?.graph?.nodes.find(n => n.id === id);
 const clientToWorld = (x, y) => ({ x: (x - view.x) / view.zoom, y: (y - 76 - view.y) / view.zoom });
@@ -179,6 +181,7 @@ function frame(now) {
     if (editor) positionEditor();
   }
   renderPresence(now);
+  cursors.render(now);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -188,6 +191,22 @@ function fit() {
   const ns = state?.graph?.nodes; if (!ns?.length) { view = { x: innerWidth / 2, y: (innerHeight - 76) / 2, zoom: 1 }; setView(); return; }
   const minX = Math.min(...ns.map(n => n.x - radius(n).rx - (n.petals?.length ? 40 : 0))), maxX = Math.max(...ns.map(n => n.x + radius(n).rx + (n.petals?.length ? 40 : 0))), minY = Math.min(...ns.map(n => n.y - radius(n).ry - (n.petals?.length ? 40 : 0))), maxY = Math.max(...ns.map(n => n.y + radius(n).ry + (n.petals?.length ? 40 : 0)));
   view.zoom = Math.min(1.05, (innerWidth - 260) / Math.max(1, maxX - minX), (innerHeight - 300) / Math.max(1, maxY - minY)); view.x = innerWidth / 2 - (minX + maxX) / 2 * view.zoom + 10; view.y = (innerHeight - 76) / 2 - (minY + maxY) / 2 * view.zoom - 10; setView();
+}
+// Glide the view so that a board point sits in the middle of the screen.
+function centerOn(x, y) {
+  const from = { ...view }, to = { x: innerWidth / 2 - x * view.zoom, y: (innerHeight - 76) / 2 - y * view.zoom }, start = performance.now();
+  const step = now => {
+    const t = reduced ? 1 : Math.min(1, (now - start) / 320), k = 1 - Math.pow(1 - t, 3);
+    view.x = from.x + (to.x - from.x) * k; view.y = from.y + (to.y - from.y) * k; setView();
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function locatePerson(userId, name) {
+  const pointer = cursors.locate(userId);
+  if (pointer) { centerOn(pointer.x, pointer.y); return; }
+  const chosen = (state?.presence || []).filter(p => p.userId === userId).flatMap(p => [p.editing, ...(p.kind === 'nodes' ? p.ids : [])]).map(id => id && nodeById(id)).find(Boolean);
+  if (chosen) centerOn(chosen.x, chosen.y); else toast(`${name} isn’t pointing at anything on the board right now.`);
 }
 function setTool(value) { tool = value; document.querySelectorAll('[data-tool]').forEach(el => el.classList.toggle('active', el.dataset.tool === tool)); board.classList.toggle('creating', tool === 'add'); }
 function select(id, additive = false) { if (!additive) selected.clear(); if (id) { if (additive && selected.has(id)) selected.delete(id); else selected.add(id); } selectedEdges.clear(); renderGraph(); renderSelection(); }
@@ -494,6 +513,10 @@ window.addEventListener('blur', () => { space = false; drag = null; pan = null; 
 window.addEventListener('resize', setView);
 api.onState(update); api.onAction(async a => {
   if (a.type === 'presence') { if (state) { state.presence = a.presence; state.sessionId = a.sessionId; renderPresence(performance.now(), true); } return; }
+  if (a.type === 'cursor') { cursors.update(a); return; }
+  if (a.type === 'cursorLeft') { cursors.remove(a.id); return; }
+  if (a.type === 'cursorsReset') { cursors.clear(); return; }
+  if (a.type === 'locate') { locatePerson(a.userId, a.name); return; }
   if (a.type === 'editLockLost') { if (editor?.lease?.token === a.lease.token) { const previous = editor; finishEdit(false); if (previous.el.value !== previous.original) recoverDraft(previous, a.lease.message); else toast(a.lease.message); } return; }
   if (a.type === 'error') toast(a.message);
   else if (a.type === 'imported') { selected.clear(); selectedEdges.clear(); physical.clear(); first = true; update(confirmedState); toast('Board imported. Undo restores the previous contents.'); }

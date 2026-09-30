@@ -1,11 +1,12 @@
 import { readPresence, updatePresence, editGuard } from './presence.js';
 import { importedGraph } from './import-board.js';
 import { profileIdentity, saveProfile, attributionNames, boardActivity, changeLog } from './profiles.js';
-import { revisions, revisionChanges, checkRevision } from './revisions.js';
+import { revisions, revisionChanges, checkRevision, rebases } from './revisions.js';
 import { env } from 'cloudflare:workers';
 import { getAuthenticatedUser } from './identity.js';
 import { GraphStore, newGraph, validateGraph, toCanvas } from './graph.js';
 import { limitHistory } from './history.js';
+import { diffGraphs, applyPatch, emptyPatch, UNDO_STEPS, MAX_PATCH_BYTES } from './undo.js';
 import { codeToken } from '../public/canvas/agent-code.js';
 import { sealToken, openToken } from './agent-secrets.js';
 import { editDelta, readView } from './agent-views.js';
@@ -38,18 +39,32 @@ export async function accessAgentBoard(owner, id, includeImage = false) {
   if (!id || id.length > 100) fail('Choose a boardId from list_boards, or use claim_board with a board code first.', 400);
   const board = await db().prepare(`SELECT b.id, b.graph, b.revision, b.content_revision, b.layout_revision, b.past, b.future, b.agent_enabled${includeImage ? ', b.image, b.image_at, b.image_revision, b.image_requested' : ''} FROM boards b JOIN agent_grants g ON g.board_id = b.id AND g.agent_hash = b.agent_hash JOIN members m ON m.board_id = b.id AND m.user_id = g.owner WHERE g.owner = ? AND b.id = ? AND b.agent_enabled = 1`).bind(owner, id).first();
   if (!board) fail('This connection has no active grant for that board. Its Bloom account may have lost access to the board; ask the owner for a board code.', 403);
-  return { board, user: { userId: 'agent', displayName: 'AI collaborator' }, role: 'agent' };
+  // An agent on someone's connection key acts for them: its changes join that person's undo history.
+  return { board, user: { userId: 'agent', displayName: 'AI collaborator', undoOwner: owner }, role: 'agent' };
 }
 export async function access(id, request, ownerOnly = false, lightweight = false, includeImage = false) {
   if (!id || id.length > 100) fail('Choose a board.', 404);
   const columns = 'id, owner, revision, content_revision, layout_revision, agent_enabled, agent_hash, image_at, image_requested, image_revision';
   const board = await db().prepare(`SELECT ${columns}${lightweight ? '' : ', graph, past, future'}${includeImage ? ', image' : ''} FROM boards WHERE id = ?`).bind(id).first(); if (!board) fail('Board not found.', 404);
   const bearer = request?.headers.get('authorization')?.replace(/^Bearer /i, '');
-  if (!ownerOnly && bearer && board.agent_enabled && board.agent_hash && await hash(bearer) === board.agent_hash) return { board, user: { userId: 'agent', displayName: 'AI collaborator' }, role: 'agent' };
+  if (!ownerOnly && bearer && board.agent_enabled && board.agent_hash && await hash(bearer) === board.agent_hash) return { board, user: { userId: 'agent', displayName: 'AI collaborator', undoOwner: board.owner }, role: 'agent' };
   const user = await identity();
   const member = await db().prepare('SELECT role FROM members WHERE board_id = ? AND user_id = ?').bind(id, user.userId).first();
   if (!member || (ownerOnly && board.owner !== user.userId)) fail('You do not have access to this board.', 403);
   return { board, user, role: member.role };
+}
+// Tell the board's live room (when this deployment has one) about a committed change or a removed
+// member. Best effort: browsers still poll, so a missed nudge only delays an update.
+export async function announce(boardId, message) {
+  const rooms = env.BOARD_ROOM; if (!rooms) return;
+  try { await rooms.get(rooms.idFromName(boardId)).fetch('https://room/announce', { method: 'POST', body: JSON.stringify(message) }); } catch (error) { console.warn('Live room unavailable:', error.message); }
+}
+// The live channel shows names and colours, so only a signed-in member may join it.
+export async function liveMember(id, request) {
+  const { user, role } = await access(id, request, false, true);
+  if (role === 'agent') fail('The live channel is for signed-in board members.', 403);
+  const row = await db().prepare('SELECT COALESCE(f.display_name, m.name) AS name, m.color FROM members m LEFT JOIN profiles f ON f.user_id = m.user_id WHERE m.board_id = ? AND m.user_id = ?').bind(id, user.userId).first();
+  return { userId: user.userId, name: row?.name || user.displayName, color: row?.color ?? 0 };
 }
 export async function listBoards(user) {
   const results = await db().prepare('SELECT b.id, b.graph, b.updated FROM boards b JOIN members m ON m.board_id = b.id WHERE m.user_id = ? ORDER BY b.updated DESC LIMIT 50').bind(user.userId).all();
@@ -57,9 +72,10 @@ export async function listBoards(user) {
 }
 export async function snapshot(board, user, role) {
   const activity = await boardActivity(db(), board.id);
-  const presence = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
+  const presence = await db().prepare('SELECT user_id AS id, name, role, seen, color FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
   const graph = validateGraph(JSON.parse(board.graph));
-  return { presence: await readPresence(db(), board.id), graph, attribution: await attributionNames(db(), graph), ...revisions(board), boardId: board.id, role, canUndo: JSON.parse(board.past).length > 0, canRedo: JSON.parse(board.future).length > 0, activity, members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
+  const history = await db().prepare('SELECT COALESCE(SUM(undone = 0), 0) AS undo, COALESCE(SUM(undone > 0), 0) AS redo FROM undo_steps WHERE board_id = ? AND user_id = ?').bind(board.id, user.undoOwner || user.userId).first();
+  return { presence: await readPresence(db(), board.id), graph, attribution: await attributionNames(db(), graph), ...revisions(board), boardId: board.id, role, canUndo: history.undo > 0, canRedo: history.redo > 0, activity, members: presence.results, user: { id: user.userId, name: user.displayName }, path: 'Cloud', dirty: false, recent: [], agentEnabled: !!board.agent_enabled };
 }
 export async function agentSnapshot(board, user, role, options = {}) {
   if (options.sinceRevision !== undefined) {
@@ -79,7 +95,7 @@ export async function agentSnapshot(board, user, role, options = {}) {
     result.activity = activity;
   }
   if (options.includeParticipants) {
-    const members = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
+    const members = await db().prepare('SELECT user_id AS id, name, role, seen, color FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(board.id).all();
     result.members = members.results;
   }
   return result;
@@ -97,19 +113,30 @@ export async function createBoard(user, input, title) {
 export async function changeBoard(board, user, role, input, response = 'full', attempt = 0) {
   try { checkRevision(board, input); } catch (error) { fail(error.message, 409); }
   const store = new GraphStore(JSON.parse(board.graph)); store.revision = board.revision;
-  const past = JSON.parse(board.past), future = JSON.parse(board.future);
-  let graph, kind;
+  // past lists the revisions whose snapshots are retained for sinceRevision reads and the change
+  // log; undo itself is per person (undo_steps). future is no longer used.
+  const past = JSON.parse(board.past), future = [];
+  const person = user.undoOwner || user.userId;
+  let graph, kind, step = null, notice;
   if (input.action === 'undo' || input.action === 'redo') {
-    const source = input.action === 'undo' ? past : future, target = input.action === 'undo' ? future : past;
-    const revision = source.pop(); if (revision === undefined) fail('Nothing to ' + input.action + '.');
-    const record = await db().prepare('SELECT graph FROM changes WHERE board_id = ? AND revision = ?').bind(board.id, revision).first();
-    if (!record) fail('This history entry is unavailable.'); graph = validateGraph(JSON.parse(record.graph)); target.push(board.revision); kind = input.action === 'undo' ? 'Undid a shared change' : 'Redid a shared change';
+    const undo = input.action === 'undo';
+    step = await db().prepare(`SELECT id, patch FROM undo_steps WHERE board_id = ? AND user_id = ? AND ${undo ? 'undone = 0 ORDER BY id' : 'undone > 0 ORDER BY undone'} DESC LIMIT 1`).bind(board.id, person).first();
+    if (!step) fail('Nothing to ' + input.action + '.');
+    const result = applyPatch(JSON.parse(board.graph), JSON.parse(step.patch), input.action);
+    if (result.skipped) notice = result.applied ? `Some of that change was left as it is, because someone else has changed it since.` : `Everything in that change has been changed by someone else since, so there was nothing to ${input.action}.`;
+    // Nothing left to move: step past it, so the next undo reaches the change before.
+    if (!result.applied) { await db().batch([moveStep(board.id, person, step.id, undo)]); return { ...(await snapshot(board, user, role)), notice }; }
+    graph = validateGraph(result.graph); past.push(board.revision); kind = undo ? 'Undid a shared change' : 'Redid a shared change';
   } else if (input.action === 'import') {
     graph = importedGraph(input.graph, input.title); kind = 'Imported a board';
-    past.push(board.revision); future.length = 0;
+    past.push(board.revision);
   } else {
-    store.apply(input.operations, user.displayName, board.revision, user.userId === 'agent' ? user.displayName : user.email || user.userId); graph = store.graph;
-    past.push(board.revision); future.length = 0; kind = store.activity.at(-1).message;
+    // A refused operation is a conflict the person should read, not a server failure.
+    try { store.apply(input.operations, user.displayName, board.revision, user.userId === 'agent' ? user.displayName : user.email || user.userId, { rebase: rebases(input) }); }
+    catch (error) { if (error.status || error.name === 'ZodError') throw error; fail(error.message, 409); }
+    // Everything this edit touched was already removed by someone else: nothing to save.
+    if (store.revision === board.revision) return { ...(await snapshot(board, user, role)), skipped: store.skipped };
+    graph = store.graph; past.push(board.revision); kind = store.activity.at(-1).message;
   }
   const changed = revisionChanges(JSON.parse(board.graph), graph);
   const contentRevision = changed.content || !changed.layout ? board.revision + 1 : revisions(board).contentRevision;
@@ -120,24 +147,48 @@ export async function changeBoard(board, user, role, input, response = 'full', a
   sizes.set(board.revision, new TextEncoder().encode(board.graph).length);
   limitHistory(past, future, sizes);
   const guard = editGuard(board, graph, user, input);
-  // D1 batches run atomically: update graph, history stacks and physical retention together.
+  // Undo history changes only if this write wins. These statements run before the board update,
+  // so they see the same revision it checks.
+  const wins = [`EXISTS (SELECT 1 FROM boards WHERE id = ? AND revision = ? AND ${guard.sql})`, [board.id, board.revision, ...guard.args]];
+  const history = step ? [moveStep(board.id, person, step.id, input.action === 'undo', wins)] : recordStep(board.id, person, diffGraphs(JSON.parse(board.graph), graph), wins);
+  // D1 batches run atomically: update graph, history and physical retention together.
   const result = await db().batch([
     db().prepare(`INSERT INTO changes (board_id, revision, graph, actor, at, kind) SELECT id, revision, graph, ?, ?, ? FROM boards WHERE id = ? AND revision = ? AND ${guard.sql}`).bind(user.userId === 'agent' ? user.displayName : user.userId, Date.now(), kind, board.id, board.revision, ...guard.args),
+    ...history,
     db().prepare(`UPDATE boards SET graph = ?, revision = revision + 1, content_revision = ?, layout_revision = ?, updated = ?, past = ?, future = ? WHERE id = ? AND revision = ? AND ${guard.sql}`).bind(text, contentRevision, layoutRevision, Date.now(), JSON.stringify(past), JSON.stringify(future), board.id, board.revision, ...guard.args),
     db().prepare('DELETE FROM changes WHERE board_id = ? AND revision NOT IN (SELECT value FROM boards, json_each(boards.past) WHERE boards.id = ? UNION SELECT value FROM boards, json_each(boards.future) WHERE boards.id = ?)').bind(board.id, board.id, board.id)
   ]);
-  if (!result[1].meta.changes) {
+  if (!result[1 + history.length].meta.changes) {
     const allowed = await db().prepare(`SELECT 1 AS ok WHERE ${guard.sql}`).bind(...guard.args).first();
     if (!allowed) fail("This idea is being edited, or your editing lock expired. Your change was not applied.", 423);
-    if (attempt < 2 && (input.expectedContentRevision !== undefined || input.expectedLayoutRevision !== undefined)) {
+    // Another write landed between our read and this one: replay on the newer board.
+    if (attempt < (rebases(input) || step ? 4 : 2) && (rebases(input) || (step && input.expectedRevision === undefined) || input.expectedContentRevision !== undefined || input.expectedLayoutRevision !== undefined)) {
       const latest = await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first();
       if (latest) return changeBoard(latest, user, role, input, response, attempt + 1);
     }
     fail('Someone changed the board at the same time. Your edit was not applied; try again.', 409);
   }
+  await announce(board.id, { type: 'rev', revision: board.revision + 1 });
   // Use this transaction's graph, not a later SELECT that could see another writer.
   if (response === 'delta') return { ...editDelta(board.id, board.revision, JSON.parse(board.graph), graph), contentRevision, layoutRevision };
-  return snapshot(await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first(), user, role);
+  const saved = await snapshot(await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(board.id).first(), user, role);
+  return { ...saved, ...(store.skipped?.length ? { skipped: store.skipped } : {}), ...(notice ? { notice } : {}) };
+}
+// A new change is the person's newest undo step, and ends what they could redo.
+function recordStep(boardId, person, patch, [wins, args]) {
+  const text = JSON.stringify(patch);
+  if (emptyPatch(patch) || new TextEncoder().encode(text).length > MAX_PATCH_BYTES) return [];
+  return [
+    db().prepare(`DELETE FROM undo_steps WHERE board_id = ? AND user_id = ? AND undone > 0 AND ${wins}`).bind(boardId, person, ...args),
+    db().prepare(`INSERT INTO undo_steps (board_id, user_id, patch, undone, at) SELECT ?, ?, ?, 0, ? WHERE ${wins}`).bind(boardId, person, text, Date.now(), ...args),
+    db().prepare(`DELETE FROM undo_steps WHERE board_id = ? AND user_id = ? AND id NOT IN (SELECT id FROM undo_steps WHERE board_id = ? AND user_id = ? ORDER BY id DESC LIMIT ${UNDO_STEPS})`).bind(boardId, person, boardId, person)
+  ];
+}
+// Undo makes a step the most recently undone; redo makes it undoable again.
+function moveStep(boardId, person, id, undo, [wins, args] = ['1', []]) {
+  return undo
+    ? db().prepare(`UPDATE undo_steps SET undone = (SELECT COALESCE(MAX(undone), 0) + 1 FROM undo_steps WHERE board_id = ? AND user_id = ?) WHERE id = ? AND ${wins}`).bind(boardId, person, id, ...args)
+    : db().prepare(`UPDATE undo_steps SET undone = 0 WHERE id = ? AND ${wins}`).bind(id, ...args);
 }
 export async function handleApi(request, segments) {
   const [section, id, action] = segments;
@@ -177,7 +228,9 @@ export async function handleApi(request, segments) {
   if (action === 'join' && request.method === 'POST') {
     const user = await identity(); const board = await db().prepare('SELECT invite_hash FROM boards WHERE id = ?').bind(id).first();
     if (!board?.invite_hash || typeof input.token !== 'string' || await hash(input.token) !== board.invite_hash) fail('This invitation is invalid or has been revoked.', 403);
-    await db().prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, ?) ON CONFLICT (board_id, user_id) DO UPDATE SET seen = excluded.seen').bind(id, user.userId, user.displayName, 'editor', Date.now()).run(); return { joined: true };
+    // A newcomer takes the first collaborator colour nobody on this board has; after eight, colours repeat.
+    await db().prepare(`INSERT INTO members (board_id, user_id, name, role, seen, color) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MIN(s.value), (SELECT COUNT(*) FROM members WHERE board_id = ?) % 8)
+      FROM json_each('[0,1,2,3,4,5,6,7]') s WHERE s.value NOT IN (SELECT color FROM members WHERE board_id = ?))) ON CONFLICT (board_id, user_id) DO UPDATE SET seen = excluded.seen`).bind(id, user.userId, user.displayName, 'editor', Date.now(), id, id).run(); return { joined: true };
   }
   // Any member may copy an existing board code; the owner alone pauses, revokes or replaces it.
   const copyCode = action === 'agent' && !!input.reuse && !input.revoke && !('enabled' in input);
@@ -189,7 +242,7 @@ export async function handleApi(request, segments) {
   if (action === 'sync' && request.method === 'POST') {
     const now = Date.now();
     if (role !== 'agent') await db().prepare('UPDATE members SET seen = ? WHERE board_id = ? AND user_id = ? AND seen < ?').bind(now, id, user.userId, now - 20000).run();
-    const members = await db().prepare('SELECT user_id AS id, name, role, seen FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(id).all();
+    const members = await db().prepare('SELECT user_id AS id, name, role, seen, color FROM members WHERE board_id = ? ORDER BY seen DESC LIMIT 50').bind(id).all();
     const result = { presence: await readPresence(db(), id), revision: board.revision, members: members.results, agentEnabled: !!board.agent_enabled, captureRequested: board.agent_enabled && board.image_requested > (board.image_at || 0) && board.image_requested > now - 60000 ? board.image_requested : null };
     if (input.revision !== board.revision) {
       const full = await db().prepare('SELECT id, graph, revision, content_revision, layout_revision, past, future, agent_enabled FROM boards WHERE id = ?').bind(id).first();
@@ -225,7 +278,7 @@ export async function handleApi(request, segments) {
     }
     return { token: value, enabled: true };
   }
-  if (action === 'member' && request.method === 'POST') { if (!input.userId || input.userId === board.owner) fail('The owner cannot be removed.'); await db().batch([db().prepare('DELETE FROM edit_locks WHERE board_id = ? AND user_id = ?').bind(id, input.userId), db().prepare('DELETE FROM presence WHERE board_id = ? AND user_id = ?').bind(id, input.userId), db().prepare('DELETE FROM members WHERE board_id = ? AND user_id = ?').bind(id, input.userId)]); return { ok: true }; }
+  if (action === 'member' && request.method === 'POST') { if (!input.userId || input.userId === board.owner) fail('The owner cannot be removed.'); await db().batch([db().prepare('DELETE FROM edit_locks WHERE board_id = ? AND user_id = ?').bind(id, input.userId), db().prepare('DELETE FROM presence WHERE board_id = ? AND user_id = ?').bind(id, input.userId), db().prepare('DELETE FROM members WHERE board_id = ? AND user_id = ?').bind(id, input.userId)]); await announce(id, { type: 'kick', userId: input.userId }); return { ok: true }; }
   if (action === 'image' && request.method === 'POST') {
     if (typeof input.image !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(input.image) || input.image.length > 700000) fail('Invalid image.');
     if (!Number.isInteger(input.revision) || !Number.isInteger(input.requestedAt)) return { accepted: false };

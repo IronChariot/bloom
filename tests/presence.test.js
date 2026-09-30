@@ -24,7 +24,7 @@ test('shared selections and exclusive text leases protect transactions without c
     const alice = { userId: 'alice', displayName: 'Alice' }, bob = { userId: 'bob', displayName: 'Bob' };
     const api = (who, segments, body) => withIdentity(who, () => handleApi(new Request(`https://bloom.test/api/${segments.join('/')}`, body === undefined ? {} : { method: 'POST', headers: { Origin: 'https://bloom.test' }, body: JSON.stringify(body) }), segments));
     const { id } = await api(alice, ['boards'], { graph: newGraph(true) });
-    sql.prepare('INSERT INTO members VALUES (?, ?, ?, ?, 0)').run(id, 'bob', 'Bob', 'editor');
+    sql.prepare('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, 0)').run(id, 'bob', 'Bob', 'editor');
     const graph = JSON.parse(sql.prepare('SELECT graph FROM boards WHERE id = ?').get(id).graph), node = graph.nodes[0].id, other = graph.nodes[1].id;
     const state = () => sql.prepare('SELECT * FROM boards WHERE id = ?').get(id);
     const presence = (who, body) => api(who, ['boards', id, 'presence'], { sessionId: who.userId + '-tab', ...body });
@@ -48,9 +48,16 @@ test('shared selections and exclusive text leases protect transactions without c
     await edit(bob, [{ type: 'updateNode', id: node, x: 42 }]);
     await edit(bob, [{ type: 'updateNode', id: other, text: 'Unrelated edit' }]);
     await edit(alice, [{ type: 'updateNode', id: node, text: 'Alice’s text' }], { sessionId: 'alice-tab', editLease: { nodeId: node, token: 'alice' } });
-    await assert.rejects(api(bob, ['boards', id, 'edit'], { action: 'undo', expectedRevision: state().revision }), { status: 423 });
+    // Undo is per person: Bob's reverts his own unrelated edit, and leaves Alice's locked text alone.
+    await api(bob, ['boards', id, 'edit'], { action: 'undo' });
+    const afterUndo = JSON.parse(state().graph).nodes;
+    assert.equal(afterUndo.find(n => n.id === other).text, graph.nodes[1].text);
+    assert.equal(afterUndo.find(n => n.id === node).text, 'Alice’s text');
+    await api(bob, ['boards', id, 'edit'], { action: 'redo' });
     await presence(alice, { action: 'release', nodeId: node, token: 'alice' });
     await acquire(bob);
+    // Undoing your own text while someone else is typing in that idea waits for them.
+    await assert.rejects(api(alice, ['boards', id, 'edit'], { action: 'undo' }), { status: 423 });
     await presence(alice, { action: 'release', nodeId: node, token: 'alice' });
     assert.equal(sql.prepare('SELECT user_id FROM edit_locks WHERE node_id = ?').get(node).user_id, 'bob');
     sql.prepare('UPDATE edit_locks SET expires = 1').run();

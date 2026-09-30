@@ -29,7 +29,7 @@ console.log('PASS: two identities, invitations, permissions, atomic concurrent e
 const agent = await api(owner, `boards/${id}/agent`, {});
 const client = new Client({ name: 'browser-test-agent', version: '1' });
 await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp?board=${id}`), { requestInit: { headers: { Authorization: `Bearer ${agent.token}` } } }));
-const read = JSON.parse((await client.callTool({ name: 'get_board', arguments: {} })).content[0].text);
+const read = JSON.parse((await client.callTool({ name: 'get_board', arguments: { includeLayout: true } })).content[0].text);
 await client.callTool({ name: 'edit_board', arguments: { expectedRevision: read.revision, operations: [{ type: 'updateNode', id: 'branch', text: 'Idea' }, { type: 'connect', source: root, target: 'leaf' }] } });
 const linked = await api(owner, `boards/${id}`); assert.equal(linked.graph.nodes[2].color, read.graph.nodes[2].color); assert.equal(linked.graph.nodes[2].depth, 2);
 await api(owner, `boards/${id}/agent`, { enabled: false });

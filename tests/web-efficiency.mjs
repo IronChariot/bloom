@@ -14,6 +14,8 @@ const fakeDocument = { hidden: false, querySelector: () => null, addEventListene
 const collaborationStub = { sessionId: 'test-session', start() {}, select() {}, async acquire() {}, async release() {}, async leave() {} };
 const sandbox = { URL, Date: class extends Date { static now() { return now; } }, console, document: fakeDocument,
   createPresenceClient: () => collaborationStub,
+  // Without a live room the bridge relies on this scheduler alone, which is what is measured here.
+  createLiveChannel: () => ({ open: false, connect() {}, close() {}, cursor() {}, select() {} }), mergePresence: synced => synced || [], renderRoster() {},
   window: { parent: { location: { href: 'https://example.test/' } }, addEventListener: (name, fn) => { listeners[name] = fn; } },
   setTimeout: (fn, delay) => { const id = ++nextTimer; timers.set(id, { fn, delay }); return id; }, clearTimeout: id => timers.delete(id),
   fetch: async (path, options) => { calls.push({ path, options }); if (fail) throw Error('offline'); return { ok: true, json: async () => ({ revision: 0, members: [], agentEnabled: true }) }; }

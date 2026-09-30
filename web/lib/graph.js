@@ -111,6 +111,28 @@ export function newGraph(demo = false) {
 }
 // An empty label removes it, so a client can clear one without a delete operation.
 function setEdgeLabel(edge, label) { const value = label.trim(); if (value) edge.label = value; else delete edge.label; }
+// A browser edit made against an older board is replayed on the latest one. Anything it
+// targets that someone else has since removed is left out (and reported), rather than failing
+// the whole edit; positions are last-writer-wins. Returns null when nothing is left to do.
+export function rebaseOperation(g, op, skipped) {
+  const hasNode = id => g.nodes.some(n => n.id === id), hasEdge = id => g.edges.some(e => e.id === id);
+  const keep = (ids, exists) => { const missing = ids.filter(id => !exists(id)); if (missing.length) skipped.push({ type: op.type, ids: missing }); return ids.filter(exists); };
+  if (['deleteNodes', 'colorNodes'].includes(op.type)) { const ids = keep(op.ids, hasNode); return ids.length ? { ...op, ids } : null; }
+  if (['deleteEdges', 'styleEdges'].includes(op.type)) { const ids = keep(op.ids, hasEdge); return ids.length ? { ...op, ids } : null; }
+  if (['deleteEdge', 'updateEdge'].includes(op.type)) return keep([op.id], hasEdge).length ? op : null;
+  if (op.type === 'updateNode') {
+    if (!keep([op.id], hasNode).length) return null;
+    if (!op.before) return op;
+    const { x, y, ...before } = op.before;
+    return { ...op, before };
+  }
+  if (['addPetal', 'updatePetal', 'deletePetal', 'movePetal'].includes(op.type)) {
+    if (!keep([op.nodeId], hasNode).length) return null;
+    if (op.type === 'addPetal') return op;
+    return keep([op.id], id => g.nodes.find(n => n.id === op.nodeId).petals?.some(p => p.id === id)).length ? op : null;
+  }
+  return op;
+}
 export class GraphStore {
   constructor(graph = newGraph(true), onChange = () => {}) { this.graph = validateGraph(graph); this.revision = 0; this.past = []; this.future = []; this.onChange = onChange; this.activity = []; }
   snapshot() { return { graph: structuredClone(this.graph), revision: this.revision, canUndo: !!this.past.length, canRedo: !!this.future.length, activity: this.activity.slice(-12) }; }
@@ -123,12 +145,16 @@ export class GraphStore {
   }
   replace(graph, actor = 'You') { return this.commit(validateGraph(graph), actor, 'Opened a board'); }
   reset(graph) { this.graph = validateGraph(graph); this.past = []; this.future = []; this.changed('You', 'Opened a board'); }
-  apply(rawOps, actor = 'You', expectedRevision, author = actor) {
+  apply(rawOps, actor = 'You', expectedRevision, author = actor, { rebase = false } = {}) {
     if (expectedRevision !== undefined && expectedRevision !== this.revision) throw new Error(`Board changed (revision ${this.revision}). Read it again before retrying.`);
     const ops = z.array(operationSchema).min(1).max(200).parse(rawOps);
     const g = structuredClone(this.graph);
     const find = id => { const n = g.nodes.find(n => n.id === id); if (!n) throw new Error(`Node ${id} does not exist.`); return n; };
-    for (const op of ops) {
+    this.skipped = []; let applied = 0;
+    for (const requested of ops) {
+      const op = rebase ? rebaseOperation(g, requested, this.skipped) : requested;
+      if (!op) continue;
+      applied++;
       if (op.type === 'addNode') {
         const parent = op.parent ? find(op.parent) : null;
         const siblings = parent ? g.edges.filter(e => e.source === parent.id).length : g.nodes.filter(n => !n.root).length;
@@ -199,6 +225,7 @@ export class GraphStore {
         if (!g.edges.some(e => e.id === op.id)) throw new Error('Connection does not exist.'); g.edges = g.edges.filter(e => e.id !== op.id);
       } else if (op.type === 'rename') g.title = op.title;
     }
+    if (!applied) return this.snapshot();
     validateGraph(g); return this.commit(g, actor, ops.length === 1 ? ({ addNode: 'Added an idea', updateNode: 'Updated an idea', deleteNodes: 'Removed ideas', connect: 'Connected ideas', deleteEdge: 'Removed a connection', rename: 'Renamed the board', styleEdges: 'Styled connections', colorNodes: 'Coloured ideas', deleteEdges: 'Removed connections', updateEdge: 'Styled a connection', addPetal: 'Added a petal', updatePetal: 'Edited a petal', deletePetal: 'Removed a petal', movePetal: 'Moved a petal' })[ops[0].type] : `Made ${ops.length} changes`);
   }
   undo() { if (!this.past.length) return this.snapshot(); this.future.push(this.graph); this.graph = this.past.pop(); this.changed('You', 'Undid a change'); return this.snapshot(); }

@@ -21,7 +21,7 @@ const user={userId:'email:import-ui@example.com',email:'import-ui@example.com',d
 const call=(segments,body)=>withIdentity(user,()=>handleApi(new Request(`http://localhost/api/${segments.join('/')}`,body===undefined?{}:{method:'POST',body:JSON.stringify(body)}),segments));
 const original=newGraph(true);original.title='Downloaded board';original.nodes[0].petals=[{id:'note',slot:0,kind:'comment',comment:'A saved comment',author:user.email,createdAt:1,color:'#ffffff'}];
 const {id}=await call(['boards'],{graph:original});
-sql.prepare('INSERT INTO members VALUES (?, ?, ?, ?, 0)').run(id,'bob','Bob','editor');
+sql.prepare('INSERT INTO members (board_id, user_id, name, role, seen, color) VALUES (?, ?, ?, ?, 0, 1)').run(id,'bob','Bob','editor');
 const row=()=>sql.prepare('SELECT graph,revision FROM boards WHERE id = ?').get(id);
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,`http://${req.headers.host}`);
@@ -55,6 +55,14 @@ try {
   await wait(async()=>await fb.locator('.remote-selection-label').count()>0);
   assert.match(await fb.locator('.remote-selection-label').first().innerText(),/Import test · editing/);
   assert.match(await fb.locator(`[data-node="${node}"]`).getAttribute('class'),/remote-selected/);
+  // Everything about Alice is drawn in her colour, and the corner lists who is here, you first.
+  assert.equal(await fb.locator(`[data-node="${node}"]`).evaluate(el=>el.style.getPropertyValue('--presence')),'#dc2626');
+  assert.match(await fb.locator(`[data-node="${node}"]`).getAttribute('class'),/remote-editing/);
+  assert.equal(await fb.locator('.remote-selection-label span').first().evaluate(el=>getComputedStyle(el).color),'rgb(220, 38, 38)');
+  await wait(async()=>await fb.locator('#roster .roster-person').count()===2);
+  assert.deepEqual(await fb.locator('#roster .roster-person').evaluateAll(els=>els.map(el=>[el.getAttribute('aria-label'),el.textContent,el.style.getPropertyValue('--person')])),[['Bob (you)','BO','#2563eb'],['Go to Import test','IT','#dc2626']]);
+  const [roster,zoom]=await fb.locator('body').evaluate(()=>['#roster','.zoom-bar'].map(s=>document.querySelector(s).getBoundingClientRect().toJSON()));
+  assert.ok(roster.bottom<=zoom.top-4&&roster.right<=zoom.right,'The people list sits above the zoom controls');
   await fb.locator(`[data-node="${node}"]`).focus();await pageB.keyboard.press('Enter');
   await wait(async()=>/is editing/.test(await fb.locator('#toast').innerText()));assert.equal(await editB.count(),0);
   assert.equal(row().revision,0);

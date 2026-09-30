@@ -1,3 +1,4 @@
+import { collaboratorColor } from './collaborators.js';
 const overlaps = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 export function placeLabel(anchor, width, obstacles, viewport) {
   const height = 26, candidates = [];
@@ -28,20 +29,26 @@ export function createPresenceView({ getState, getPhysical, radius, worldToClien
         const key = `${target.kind}:${target.id}`;
         if (!targets.has(key)) targets.set(key, { ...target, people: new Map() });
         const names = targets.get(key).people;
-        names.set(person.userId, { name: person.name, editing: target.editing || names.get(person.userId)?.editing });
+        names.set(person.userId, { name: person.name, color: collaboratorColor(person.color), editing: target.editing || names.get(person.userId)?.editing });
       }
     }
     if (!targets.size && !hadTargets) { layer.replaceChildren(); return; }
     hadTargets = targets.size > 0;
-    document.querySelectorAll('[data-node]').forEach(el => el.classList.toggle('remote-selected', targets.has(`nodes:${el.dataset.node}`)));
-    document.querySelectorAll('[data-edge]').forEach(el => el.classList.toggle('remote-selected', targets.has(`edges:${el.dataset.edge}`)));
+    // A highlighted blob or connection takes the colour of the first person on it.
+    const mark = (el, target) => {
+      el.classList.toggle('remote-selected', !!target);
+      el.classList.toggle('remote-editing', !!target && [...target.people.values()].some(p => p.editing));
+      if (target) el.style.setProperty('--presence', target.people.values().next().value.color); else el.style.removeProperty('--presence');
+    };
+    document.querySelectorAll('[data-node]').forEach(el => mark(el, targets.get(`nodes:${el.dataset.node}`)));
+    document.querySelectorAll('[data-edge]').forEach(el => mark(el, targets.get(`edges:${el.dataset.edge}`)));
     if (!graph) { layer.replaceChildren(); return; }
     const obstacles = graph.nodes.flatMap(n => {
       const p = physical.get(n.id); if (!p) return [];
       const pos = worldToClient(p.x, p.y), r = radius(n), scale = Math.abs(worldToClient(1, 0).x - worldToClient(0, 0).x), extra = n.petals?.length ? 38 : 8;
       return [{ x: pos.x - (r.rx + extra) * scale, y: pos.y - (r.ry + extra) * scale, w: (r.rx + extra) * scale * 2, h: (r.ry + extra) * scale * 2, id: n.id }];
     });
-    for (const el of document.querySelectorAll('.toolbar,.selection-actions:not(.hidden),.zoom-bar,.toast:not(.hidden),.draft-recovery')) {
+    for (const el of document.querySelectorAll('.toolbar,.selection-actions:not(.hidden),.zoom-bar,.toast:not(.hidden),.draft-recovery,#roster:not([hidden])')) {
       const box = el.getBoundingClientRect(); obstacles.push({ x: box.x - 4, y: box.y - 4, w: box.width + 8, h: box.height + 8 });
     }
     const used = new Set();
@@ -58,8 +65,14 @@ export function createPresenceView({ getState, getPhysical, radius, worldToClien
       used.add(key);
       let el = [...layer.children].find(el => el.dataset.target === key);
       if (!el) { el = document.createElement('div'); el.className = 'remote-selection-label'; el.dataset.target = key; layer.append(el); }
-      const label = [...target.people.values()].map(p => `${p.name}${p.editing ? ' · editing' : ''}`).join(', ');
-      if (el.textContent !== label) el.textContent = label;
+      const people = [...target.people.values()], label = people.map(p => `${p.name}${p.editing ? ' · editing' : ''}`).join(', '), key2 = label + people.map(p => p.color).join();
+      if (el.dataset.label !== key2) {
+        el.dataset.label = key2; el.style.setProperty('--presence', people[0].color);
+        el.replaceChildren(...people.flatMap((p, i) => {
+          const name = document.createElement('span'); name.style.color = p.color; name.textContent = `${p.name}${p.editing ? ' · editing' : ''}`;
+          return i ? [', ', name] : [name];
+        }));
+      }
       el.title = label;
       const box = placeLabel(anchor, Math.min(240, el.scrollWidth || 130), obstacles, { w: innerWidth, h: innerHeight });
       el.style.left = `${box.x}px`; el.style.top = `${box.y}px`;
