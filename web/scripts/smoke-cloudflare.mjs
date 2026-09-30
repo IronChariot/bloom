@@ -104,7 +104,9 @@ try {
   }
   const connectionKey = 'bloom_agent_' + randomBytes(32).toString('hex');
   const secondToken = randomBytes(32).toString('hex');
-  await query('INSERT INTO agent_connections (owner, token_hash, created) VALUES (?, ?, ?)', [connectionOwner, digest(connectionKey), Date.now()]);
+  await query('INSERT INTO agent_connections (id, owner, label, token_hash, created) VALUES (?, ?, ?, ?, ?)', [randomUUID(), connectionOwner, 'Smoke test', digest(connectionKey), Date.now()]);
+  // Since per-account keys, a key can claim only boards its account is a member of.
+  await query('INSERT INTO members (board_id, user_id, name, role, seen) VALUES (?, ?, ?, ?, ?)', [id, connectionOwner, 'Smoke test', 'editor', Date.now()]);
   await query('UPDATE boards SET agent_enabled = 1, agent_hash = ? WHERE id = ?', [digest(token), id]);
   await query('INSERT INTO boards (id, owner, graph, updated, agent_hash, agent_enabled) VALUES (?, ?, ?, ?, ?, 1)', [secondId, 'another-owner', JSON.stringify(graph), Date.now(), digest(secondToken)]);
   const general = await connect(null, connectionKey);
